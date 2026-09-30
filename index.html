@@ -93,7 +93,7 @@ textarea.in{min-height:70px;resize:vertical}
 .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:16px 0 4px}
 .seg button{flex:1;border:none;background:#fff;padding:8px;color:var(--sub);font-weight:600}
 .seg button.on{background:var(--main);color:#fff}
-.err{color:var(--no);font-size:13px;margin-top:8px;min-height:1em}
+.err{color:var(--no);font-size:13px;margin-top:8px;min-height:1em;white-space:pre-wrap;word-break:break-all}
 
 table.t{width:100%;border-collapse:collapse;font-size:14px}
 table.t th,table.t td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
@@ -246,18 +246,32 @@ async function api(action, extra) {
   if (!url) throw new Error("接続先が設定されていません。");
   $("loading").classList.remove("hidden");
   try {
-    const res = await fetch(url, {
+    const body = JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}));
+    // Google のログイン情報（Cookie）を送らない：端末で複数の Google アカウントにログインしていると
+    // Apps Script がエラー画面を返すことがあるため
+    const send = () => fetch(url, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}))
+      credentials: "omit",
+      redirect: "follow",
+      body: body
     });
-    const text = await res.text();
+    let res = await send();
+    let text = await res.text();
+    if (text.trim().charAt(0) !== "{") {
+      // 一時的にエラー画面が返ることがあるので、1回だけやり直す
+      await new Promise(r => setTimeout(r, 800));
+      res = await send();
+      text = await res.text();
+    }
     let json;
     try { json = JSON.parse(text); }
     catch (e) {
-      // JSON ではなく Google のエラー画面・ログイン画面が返ってきた場合
-      throw new Error("スプレッドシート（Apps Script）から正しい応答がありませんでした。" +
-        "デプロイの「アクセスできるユーザー」が「全員」になっているか、最新のコードを「新バージョン」でデプロイしたかを確認してください。");
+      // JSON ではなく Google のエラー画面・ログイン画面が返ってきた場合。原因調査のため中身の要点を表示する
+      const title = (text.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || "";
+      const plain = text.replace(/<head[\s\S]*?<\/head>|<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      throw new Error("スプレッドシート（Apps Script）から正しい応答がありませんでした。\n" +
+        `［詳細］状態 ${res.status}／${res.url.replace(/^https:\/\//, "").split("?")[0].slice(0, 60)}／${title} ${plain.slice(0, 120)}`);
     }
     if (!json.ok) {
       const err = new Error(json.error || "エラーが発生しました。");
