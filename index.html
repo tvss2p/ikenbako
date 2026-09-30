@@ -241,12 +241,28 @@ function lsSet(k, v) { try { v === null ? localStorage.removeItem(k) : localStor
 
 function apiUrl() { return API_URL || lsGet(LS_API) || ""; }
 
+// 意見箱の正しい返事か（接続テスト用の返事＝送信内容が消えた場合や、エラー画面は除く）
+function isApiReply(text) {
+  const t = text.trim();
+  if (t.charAt(0) !== "{") return false;
+  try { return JSON.parse(t).app !== "ikenbako"; } catch (e) { return false; }
+}
+
+function toBase64Url(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 async function api(action, extra) {
   const url = apiUrl();
   if (!url) throw new Error("接続先が設定されていません。");
   $("loading").classList.remove("hidden");
   try {
-    const body = JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}));
+    // rid：同じ操作を送り直したときに二重登録されないための番号
+    const rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const body = JSON.stringify(Object.assign({ action: action, auth: S.auth, rid: rid }, extra || {}));
     // Google のログイン情報（Cookie）を送らない：端末で複数の Google アカウントにログインしていると
     // Apps Script がエラー画面を返すことがあるため
     const send = () => fetch(url, {
@@ -258,10 +274,12 @@ async function api(action, extra) {
     });
     let res = await send();
     let text = await res.text();
-    if (text.trim().charAt(0) !== "{") {
-      // 一時的にエラー画面が返ることがあるので、1回だけやり直す
-      await new Promise(r => setTimeout(r, 800));
-      res = await send();
+    if (!isApiReply(text)) {
+      // スマホ（Safari）では POST が Google 側で転送され、送信内容が消えたりエラー画面が返ったりすることがある。
+      // その場合は、転送されても消えない GET（操作内容を URL に含める）で送り直す。
+      const getUrl = url + "?p=" + encodeURIComponent(toBase64Url(body));
+      if (getUrl.length > 12000) throw new Error("入力した文章が長すぎるため、この端末からは送信できませんでした。文章を短くするか、パソコンから送信してください。");
+      res = await fetch(getUrl, { credentials: "omit", redirect: "follow" });
       text = await res.text();
     }
     let json;

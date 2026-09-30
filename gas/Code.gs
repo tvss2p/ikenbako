@@ -103,14 +103,32 @@ function promptPassword_(prop, title, message) {
 
 // ===== Web API =====
 
-function doGet() {
-  return json_({ ok: true, app: "ikenbako" });
+// GET：パラメータ p があれば、POST と同じ操作として処理する。
+// スマホ（Safari）では POST の途中で Google に転送されて送信内容が消えることがあるため、画面側はその場合に GET で送り直す。
+// p は操作内容の JSON を UTF-8 → Base64（URL用）にしたもの。
+function doGet(e) {
+  const p = e && e.parameter && e.parameter.p;
+  if (!p) return json_({ ok: true, app: "ikenbako" });
+  let contents;
+  try {
+    contents = Utilities.newBlob(Utilities.base64DecodeWebSafe(p)).getDataAsString("UTF-8");
+  } catch (err) {
+    return json_({ ok: false, error: "送信内容を読み取れませんでした。" });
+  }
+  return handle_(contents);
 }
 
 // ブラウザからは CORS のプリフライトを避けるため Content-Type: text/plain で JSON を送る。
 function doPost(e) {
+  return handle_(e && e.postData ? e.postData.contents : "");
+}
+
+let CURRENT_RID = ""; // 処理中の操作の番号（送り直しによる二重処理を防ぐ）
+
+function handle_(contents) {
   try {
-    const req = JSON.parse(e.postData.contents);
+    const req = JSON.parse(contents);
+    CURRENT_RID = String(req.rid || "").slice(0, 40);
     ensureSheets_();
     if (req.action === "register") return json_(register_(req));
     const user = authenticate_(req.auth || {});
@@ -158,9 +176,16 @@ function withLock_(fn, user) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(25000)) throw userError_("混み合っています。少し待ってからもう一度お試しください。");
   let message;
+  const cache = CacheService.getScriptCache();
+  const ridKey = CURRENT_RID ? "rid_" + CURRENT_RID : "";
   try {
-    message = fn();
-    SpreadsheetApp.flush();
+    if (ridKey && cache.get(ridKey)) {
+      message = cache.get(ridKey); // 同じ操作がすでに処理済み（送り直し）なので、もう一度は実行しない
+    } else {
+      message = fn();
+      SpreadsheetApp.flush();
+      if (ridKey) cache.put(ridKey, message || "処理しました。", 600);
+    }
   } finally {
     lock.releaseLock();
   }
