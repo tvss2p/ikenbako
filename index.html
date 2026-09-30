@@ -133,6 +133,7 @@ table.t th{color:var(--sub);font-weight:600;font-size:12px}
     <h1>社員意見箱</h1>
     <span class="who" id="who"></span>
     <button id="btnReload" class="hidden" title="最新の状態に更新">更新</button>
+    <button id="btnAccount" class="hidden" title="パスワード変更">⚙</button>
     <button id="btnLogout" class="hidden">ログアウト</button>
   </div>
 </header>
@@ -158,10 +159,10 @@ table.t th{color:var(--sub);font-weight:600;font-size:12px}
       <button data-role="company">会社</button>
     </div>
     <div id="empFields">
-      <label class="f">社員番号</label>
-      <input id="loginId" class="in" autocomplete="username" inputmode="numeric">
-      <label class="f">投票コード <small>（運営から配布された8文字）</small></label>
-      <input id="loginCode" class="in" autocomplete="current-password" style="text-transform:uppercase">
+      <label class="f">メールアドレス</label>
+      <input id="loginEmail" type="email" class="in" autocomplete="username">
+      <label class="f">パスワード</label>
+      <input id="loginEmpPw" type="password" class="in" autocomplete="current-password">
     </div>
     <div id="pwFields" class="hidden">
       <label class="f">パスワード</label>
@@ -172,7 +173,32 @@ table.t th{color:var(--sub);font-weight:600;font-size:12px}
     </label>
     <div class="err" id="loginErr"></div>
     <button class="btn" id="btnLogin" style="width:100%;margin-top:8px">ログイン</button>
+    <div id="toRegister" style="text-align:center;margin-top:14px">
+      <button class="btn gray" id="btnToRegister" style="width:100%">はじめての方：アカウント登録</button>
+      <p class="tabnote" style="margin-top:8px">パスワードを忘れた場合は、運営に仮パスワードの発行を依頼してください。</p>
+    </div>
     <p class="tabnote" style="margin-top:14px">投稿・コメントは匿名です。誰がどちらに投票したかは記録されません。</p>
+  </div>
+</section>
+
+<!-- 社員のアカウント登録 -->
+<section id="viewRegister" class="hidden">
+  <div class="login">
+    <h2>アカウント登録</h2>
+    <p class="tabnote">氏名は本名で登録してください（1人1アカウント。同じ氏名はすでに登録済みとして受け付けません）。氏名は投票済みかどうかの確認にだけ使い、投稿・コメント・賛否には表示されません。</p>
+    <label class="f">氏名</label>
+    <input id="regName" class="in" maxlength="30" autocomplete="name" placeholder="例：佐野 太郎">
+    <label class="f">部署 <small>（任意）</small></label>
+    <input id="regDept" class="in" maxlength="30">
+    <label class="f">メールアドレス <small>（ログインに使います）</small></label>
+    <input id="regEmail" type="email" class="in" autocomplete="username">
+    <label class="f">パスワード <small>（8文字以上）</small></label>
+    <input id="regPw" type="password" class="in" autocomplete="new-password">
+    <label class="f">パスワード（確認）</label>
+    <input id="regPw2" type="password" class="in" autocomplete="new-password">
+    <div class="err" id="regErr"></div>
+    <button class="btn" id="btnRegister" style="width:100%;margin-top:8px">登録する</button>
+    <button class="btn gray" id="btnBackLogin" style="width:100%;margin-top:8px">ログイン画面に戻る</button>
   </div>
 </section>
 
@@ -226,7 +252,11 @@ async function api(action, extra) {
       body: JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}))
     });
     const json = await res.json();
-    if (!json.ok) throw new Error(json.error || "エラーが発生しました。");
+    if (!json.ok) {
+      const err = new Error(json.error || "エラーが発生しました。");
+      if (json.code === "SESSION" && S.data) { expireSession(err.message); err.handled = true; }
+      throw err;
+    }
     return json;
   } catch (e) {
     if (e instanceof TypeError) throw new Error("サーバーに接続できませんでした。通信状態を確認してください。");
@@ -245,10 +275,29 @@ function toast(msg) {
 }
 
 function show(view) {
-  ["viewSetup", "viewLogin", "viewMain"].forEach(v => $(v).classList.toggle("hidden", v !== view));
+  ["viewSetup", "viewLogin", "viewRegister", "viewMain"].forEach(v => $(v).classList.toggle("hidden", v !== view));
   const inMain = view === "viewMain";
   $("btnLogout").classList.toggle("hidden", !inMain);
   $("btnReload").classList.toggle("hidden", !inMain);
+  $("btnAccount").classList.toggle("hidden", !(inMain && S.role === "emp"));
+  if (!inMain) $("who").textContent = "";
+}
+
+// ログイン状態が切れたとき
+function expireSession(msg) {
+  lsSet(LS_AUTH, null);
+  S.auth = null; S.data = null; S.openId = null;
+  $("tabs").innerHTML = "";
+  closeModal();
+  show("viewLogin");
+  $("loginErr").textContent = msg;
+}
+
+// サーバーから新しいログイン状態（トークン）を受け取ったら保存する
+function saveToken(data) {
+  if (!data.token) return;
+  S.auth = { role: "emp", token: data.token };
+  if (S.remember) lsSet(LS_AUTH, JSON.stringify(S.auth));
 }
 
 // ===== 起動 =====
@@ -258,6 +307,8 @@ async function start() {
   if (saved) {
     try {
       S.auth = JSON.parse(saved);
+      S.remember = true;
+      if (S.auth.role === "emp" && !S.auth.token) throw new Error("ログインしてください。");
       await load("login");
       return;
     } catch (e) {
@@ -271,9 +322,10 @@ async function start() {
 
 async function load(action, extra) {
   const data = await api(action || "list", extra);
+  saveToken(data);
   S.data = data;
   S.role = data.role;
-  if (!document.querySelector("#tabs button") || action === "login") initMain();
+  if (!document.querySelector("#tabs button") || action === "login" || action === "register") initMain();
   render();
   if (S.openId) openDetail(S.openId);
   if (data.message) toast(data.message);
@@ -282,7 +334,7 @@ async function load(action, extra) {
 // 操作を送り、返ってきた最新一覧で画面を更新する
 async function act(action, extra) {
   try { await load(action, extra); return true; }
-  catch (e) { alert(e.message); return false; }
+  catch (e) { if (!e.handled) alert(e.message); return false; }
 }
 
 // ===== 接続先設定・ログイン =====
@@ -298,6 +350,7 @@ $("roleSeg").onclick = e => {
   S.loginRole = b.dataset.role;
   document.querySelectorAll("#roleSeg button").forEach(x => x.classList.toggle("on", x === b));
   $("empFields").classList.toggle("hidden", S.loginRole !== "emp");
+  $("toRegister").classList.toggle("hidden", S.loginRole !== "emp");
   $("pwFields").classList.toggle("hidden", S.loginRole === "emp");
   $("loginErr").textContent = "";
 };
@@ -305,23 +358,59 @@ $("roleSeg").onclick = e => {
 async function doLogin() {
   const role = S.loginRole || "emp";
   S.auth = role === "emp"
-    ? { role: "emp", id: $("loginId").value.trim(), code: $("loginCode").value.trim().toUpperCase() }
-    : { role: role, id: role, code: $("loginPw").value };
+    ? { role: "emp", email: $("loginEmail").value.trim(), password: $("loginEmpPw").value }
+    : { role: role, code: $("loginPw").value };
+  S.remember = $("remember").checked;
   $("loginErr").textContent = "";
   try {
     await load("login");
-    if ($("remember").checked) lsSet(LS_AUTH, JSON.stringify(S.auth));
-    $("loginCode").value = ""; $("loginPw").value = "";
+    // 社員はサーバーが発行したトークンだけを保存する（パスワードは端末に残さない）
+    if (S.remember && role !== "emp") lsSet(LS_AUTH, JSON.stringify(S.auth));
+    $("loginEmpPw").value = ""; $("loginPw").value = "";
   } catch (e) {
     S.auth = null;
     $("loginErr").textContent = e.message;
   }
 }
 $("btnLogin").onclick = doLogin;
-["loginId", "loginCode", "loginPw"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); }));
+["loginEmail", "loginEmpPw", "loginPw"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); }));
+
+// ===== アカウント登録 =====
+$("btnToRegister").onclick = () => { $("regErr").textContent = ""; show("viewRegister"); };
+$("btnBackLogin").onclick = () => show("viewLogin");
+$("btnRegister").onclick = async () => {
+  const v = id => $(id).value.trim();
+  const err = m => { $("regErr").textContent = m; };
+  if (!v("regName")) return err("氏名を入力してください。");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v("regEmail"))) return err("メールアドレスが正しくありません。");
+  if ($("regPw").value.length < 8) return err("パスワードは8文字以上にしてください。");
+  if ($("regPw").value !== $("regPw2").value) return err("確認用のパスワードが一致しません。");
+  err("");
+  S.remember = $("remember").checked;
+  try {
+    await load("register", { name: v("regName"), dept: v("regDept"), email: v("regEmail"), password: $("regPw").value });
+    ["regName", "regDept", "regEmail", "regPw", "regPw2"].forEach(id => { $(id).value = ""; });
+  } catch (e) { err(e.message); }
+};
+
+// ===== パスワード変更（社員） =====
+$("btnAccount").onclick = () => {
+  openModal(`<h2>パスワード変更</h2>
+    <label class="f">現在のパスワード</label><input id="cpCur" type="password" class="in" autocomplete="current-password">
+    <label class="f">新しいパスワード <small>（8文字以上）</small></label><input id="cpNew" type="password" class="in" autocomplete="new-password">
+    <label class="f">新しいパスワード（確認）</label><input id="cpNew2" type="password" class="in" autocomplete="new-password">
+    <button class="btn" id="btnCp" style="margin-top:14px;width:100%">変更する</button>`);
+  $("btnCp").onclick = async () => {
+    if ($("cpNew").value.length < 8) { alert("新しいパスワードは8文字以上にしてください。"); return; }
+    if ($("cpNew").value !== $("cpNew2").value) { alert("確認用のパスワードが一致しません。"); return; }
+    const ok = await act("changePassword", { current: $("cpCur").value, password: $("cpNew").value });
+    if (ok) closeModal();
+  };
+};
 
 $("btnLogout").onclick = () => {
   if (!confirm("ログアウトしますか？")) return;
+  if (S.auth && S.auth.token) api("logout").catch(() => {});
   lsSet(LS_AUTH, null);
   S.auth = null; S.data = null; S.openId = null;
   $("tabs").innerHTML = "";
@@ -639,8 +728,7 @@ function renderAdmin() {
   const openOps = d.opinions.filter(o => o.status === "投票中" && !o.closed && !o.hidden);
 
   let h = `<div class="panel" style="background:#fff">
-    <div class="meta"><span>在籍社員 <b>${d.activeCount}</b> 名</span>
-    ${d.noCodeCount ? `<span class="no">投票コード未発行 ${d.noCodeCount} 名（スプレッドシートのメニューから発行）</span>` : ""}</div></div>`;
+    <div class="meta"><span>登録社員（投票対象） <b>${d.activeCount}</b> 名</span></div></div>`;
 
   h += `<div class="panel" style="background:#fff"><h4 style="margin:0 0 6px">意見書として提出</h4>
     <p class="tabnote">提出する意見を選んでください。提出すると投票が締め切られ、「提出済」に移動し、意見書（PDF）の印刷画面が開きます。</p>`;
@@ -658,6 +746,15 @@ function renderAdmin() {
     `</table>` : `<p class="tabnote">${openOps.length ? "全員が投票済みです。" : "投票中の意見はありません。"}</p>`;
   h += `</div>`;
 
+  h += `<div class="panel" style="background:#fff"><h4 style="margin:0 0 6px">登録アカウント（${(d.users || []).length}件）</h4>
+    <p class="tabnote">パスワードを忘れた人には「仮パスワード」を発行して本人に伝えてください。退職・重複・なりすましのアカウントは削除できます。</p>`;
+  h += (d.users || []).length ? d.users.map(u => `<div class="comment" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px"><b>${esc(u.name)}</b>${u.active ? "" : ` <span class="chip gray">対象外</span>`} <span class="tabnote">${esc(u.dept)}</span>
+        <div class="tabnote" style="margin:0;word-break:break-all">${esc(u.email)}　登録 ${esc(u.registeredAt)}</div></div>
+      <div style="white-space:nowrap"><button class="btn sm gray" data-reset="${esc(u.empNo)}">仮パスワード</button> <button class="btn sm danger" data-del="${esc(u.empNo)}">削除</button></div>
+    </div>`).join("") : `<p class="tabnote">まだ登録はありません。</p>`;
+  h += `</div>`;
+
   h += `<div class="panel" style="background:#fff;margin-bottom:40px"><h4 style="margin:0 0 6px">意見書の再出力</h4>`;
   h += submitted.length ? `<div class="row"><select id="reprintSel" class="in" style="flex:1">${submitted.map(o => `<option value="${o.id}">${esc(o.submittedAt)} No.${o.id} ${esc(o.title)}</option>`).join("")}</select>
     <button class="btn sub" id="btnReprint">印刷・PDF保存</button></div>` : `<p class="tabnote">提出済みの意見はありません。</p>`;
@@ -666,6 +763,19 @@ function renderAdmin() {
   $("adminPanel").innerHTML = h;
   const sel = $("btnSubmitSel");
   if (sel) sel.onclick = () => submitAndPrint([...document.querySelectorAll(".subChk:checked")].map(c => Number(c.value)));
+  const userName = id => (d.users.find(u => u.empNo === id) || {}).name || "";
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+    if (!confirm(`${userName(b.dataset.del)} さんのアカウントを削除します。元に戻せません。よろしいですか？`)) return;
+    act("deleteUser", { empNo: b.dataset.del });
+  });
+  document.querySelectorAll("[data-reset]").forEach(b => b.onclick = async () => {
+    const name = userName(b.dataset.reset);
+    if (!confirm(`${name} さんの仮パスワードを発行します。今のパスワードは使えなくなります。よろしいですか？`)) return;
+    try {
+      await load("resetPassword", { empNo: b.dataset.reset });
+      alert(`${name} さんの仮パスワード：${S.data.tempPassword}\n\n本人に伝えて、ログイン後に右上の⚙から変更してもらってください。\n（この画面を閉じると再表示できません）`);
+    } catch (e) { alert(e.message); }
+  });
   const rp = $("btnReprint");
   if (rp) rp.onclick = () => printDocs([S.data.opinions.find(o => o.id === Number($("reprintSel").value))]);
 }

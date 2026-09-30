@@ -39,7 +39,10 @@ const COLS = {
   ],
   comments: [["id", "ID"], ["opinionId", "意見ID"], ["stance", "立場"], ["body", "本文"], ["postedAt", "投稿日"], ["hidden", "非表示"]],
   voted: [["empNo", "社員番号"], ["opinionId", "意見ID"], ["date", "投票日"]],
-  employees: [["empNo", "社員番号"], ["name", "氏名"], ["dept", "部署"], ["active", "在籍（○/×）"], ["codeHash", "投票コード（ハッシュ）"]],
+  employees: [
+    ["empNo", "社員ID"], ["name", "氏名"], ["dept", "部署"], ["email", "メールアドレス"],
+    ["active", "在籍（○/×）"], ["pwHash", "パスワード（ハッシュ）"], ["salt", "ソルト"], ["registeredAt", "登録日"]
+  ],
   settings: [["key", "項目"], ["value", "値"], ["note", "説明"]],
   log: [["at", "日時"], ["actor", "操作者"], ["action", "操作"], ["detail", "内容"]]
 };
@@ -50,6 +53,11 @@ const DEFAULT_SETTINGS = [
   ["提出先", "佐野ケーブルテレビ 御中", "意見書（PDF）の宛先"],
   ["提出者名義", "社員意見箱 運営", "意見書（PDF）の提出者欄"]
 ];
+
+const PW_MIN = 8;
+const PW_ROUNDS = 1000;               // パスワードのハッシュを重ねる回数（総当たり対策）
+const SESSION_DAYS = 90;              // ログインしたままでいられる日数
+const MAX_REGISTER_PER_HOUR = 30;     // 1時間あたりの新規登録の上限（いたずら対策）
 
 const CATEGORIES = ["就業規則", "勤務・シフト", "業務改善", "設備・環境", "福利厚生", "その他"];
 const STANCES = ["賛成の立場", "反対の立場", "質問・その他"];
@@ -72,15 +80,12 @@ function onOpen() {
     .addSeparator()
     .addItem("運営パスワードを設定", "setAdminPassword")
     .addItem("会社用パスワードを設定", "setCompanyPassword")
-    .addSeparator()
-    .addItem("投票コードを発行（未発行の社員）", "issueCodes")
-    .addItem("選択した社員の投票コードを再発行", "reissueSelectedCodes")
     .addToUi();
 }
 
 function setupSheets() {
   ensureSheets_();
-  SpreadsheetApp.getUi().alert("シートを作成しました。「社員名簿」に社員番号・氏名・部署・在籍を入力してください。");
+  SpreadsheetApp.getUi().alert("シートを作成しました。社員は意見箱の画面から自分で登録します。");
 }
 
 function setAdminPassword() { promptPassword_("ADMIN_PW", "運営パスワードを設定", "意見箱の「運営」ログインに使うパスワードを入力してください。"); }
@@ -96,53 +101,6 @@ function promptPassword_(prop, title, message) {
   ui.alert("設定しました。");
 }
 
-// 投票コードが未発行の在籍社員にコードを発行し、「コード配布用」シートに一覧を出す。
-function issueCodes() {
-  ensureSheets_();
-  const emps = readTable_("employees");
-  const targets = emps.filter(e => e.empNo && isActive_(e) && !e.codeHash);
-  if (!targets.length) { SpreadsheetApp.getUi().alert("未発行の在籍社員はいません。"); return; }
-  writeCodes_(targets);
-}
-
-// 社員名簿で選択している行の社員に、コードを発行し直す（コードを忘れた・漏れた場合）。
-function reissueSelectedCodes() {
-  const ui = SpreadsheetApp.getUi();
-  const sheet = SpreadsheetApp.getActiveSheet();
-  if (sheet.getName() !== SHEETS.employees) { ui.alert("「社員名簿」シートで、再発行する社員の行を選択してから実行してください。"); return; }
-  const range = sheet.getActiveRange();
-  const first = Math.max(2, range.getRow());
-  const last = range.getLastRow();
-  const emps = readTable_("employees").filter(e => e._row >= first && e._row <= last && e.empNo);
-  if (!emps.length) { ui.alert("社員の行が選択されていません。"); return; }
-  if (ui.alert("選択した " + emps.length + " 名のコードを再発行します。古いコードは使えなくなります。よろしいですか？", ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
-  writeCodes_(emps);
-}
-
-function writeCodes_(targets) {
-  const ss = SpreadsheetApp.getActive();
-  const empSheet = ss.getSheetByName(SHEETS.employees);
-  const hashCol = colIndex_("employees", "codeHash");
-  const rows = [["社員番号", "氏名", "部署", "投票コード"]];
-  targets.forEach(e => {
-    const code = randomCode_();
-    empSheet.getRange(e._row, hashCol).setValue(toCell_(codeHash_(code)));
-    rows.push([txt_(e.empNo), txt_(e.name), txt_(e.dept), code]);
-  });
-  let out = ss.getSheetByName("コード配布用");
-  if (!out) out = ss.insertSheet("コード配布用");
-  out.clear();
-  out.getRange(1, 1, rows.length, 4).setValues(rows);
-  out.getRange(1, 1, 1, 4).setFontWeight("bold");
-  out.autoResizeColumns(1, 4);
-  ss.setActiveSheet(out);
-  appendLog_("運営", "投票コード発行", (rows.length - 1) + "名");
-  SpreadsheetApp.getUi().alert(
-    (rows.length - 1) + " 名分のコードを「コード配布用」シートに出力しました。\n" +
-    "印刷・配布が終わったら、「コード配布用」シートは必ず削除してください。\n" +
-    "（名簿にはコードそのものではなく、照合用のハッシュ値だけが保存されています）");
-}
-
 // ===== Web API =====
 
 function doGet() {
@@ -154,25 +112,41 @@ function doPost(e) {
   try {
     const req = JSON.parse(e.postData.contents);
     ensureSheets_();
+    if (req.action === "register") return json_(register_(req));
     const user = authenticate_(req.auth || {});
     return json_(dispatch_(req, user));
   } catch (err) {
-    return json_({ ok: false, error: err && err.userMessage ? err.userMessage : "エラーが発生しました：" + err });
+    return json_({ ok: false, error: err && err.userMessage ? err.userMessage : "エラーが発生しました：" + err, code: err && err.code });
   }
 }
 
 function dispatch_(req, user) {
   const a = req.action;
   if (a === "login" || a === "list") return listPayload_(user);
+  if (a === "logout") { if (user.sessionKey) PropertiesService.getScriptProperties().deleteProperty(user.sessionKey); return { ok: true }; }
 
   if (a === "post") { need_(user, "emp"); return withLock_(() => postOpinion_(req), user); }
   if (a === "vote") { need_(user, "emp"); return withLock_(() => vote_(user, req), user); }
   if (a === "comment") { need_(user, "emp"); return withLock_(() => addComment_(req), user); }
+  if (a === "changePassword") {
+    need_(user, "emp");
+    const payload = withLock_(() => changePassword_(user, req), user);
+    payload.token = createSession_(findUser_(user.empNo)); // この端末はログインしたままにする
+    return payload;
+  }
 
   if (a === "setDeadline") { need_(user, "admin"); return withLock_(() => setDeadline_(req), user); }
   if (a === "setHidden") { need_(user, "admin"); return withLock_(() => setHidden_(req), user); }
   if (a === "setStatus") { need_(user, "admin"); return withLock_(() => setStatus_(req), user); }
   if (a === "submit") { need_(user, "admin"); return withLock_(() => submit_(req), user); }
+  if (a === "deleteUser") { need_(user, "admin"); return withLock_(() => deleteUser_(req), user); }
+  if (a === "resetPassword") {
+    need_(user, "admin");
+    let temp;
+    const payload = withLock_(() => { temp = resetPassword_(req); }, user);
+    payload.tempPassword = temp;
+    return payload;
+  }
 
   if (a === "answer") { need_(user, "company"); return withLock_(() => answer_(req), user); }
 
@@ -195,41 +169,179 @@ function withLock_(fn, user) {
   return payload;
 }
 
+// ===== 社員の新規登録 =====
+
+function register_(req) {
+  const name = text_(req.name, 30, "氏名", true);
+  const dept = text_(req.dept, 30, "部署", false);
+  const email = normEmail_(req.email);
+  const pw = String(req.password || "");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 100) throw userError_("メールアドレスが正しくありません。");
+  checkPassword_(pw);
+
+  const cache = CacheService.getScriptCache();
+  const count = Number(cache.get("register_count") || 0);
+  if (count >= MAX_REGISTER_PER_HOUR) throw userError_("登録が集中しています。しばらくしてからもう一度お試しください。");
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) throw userError_("混み合っています。少し待ってからもう一度お試しください。");
+  let user;
+  try {
+    const emps = readTable_("employees");
+    const key = normName_(name);
+    if (emps.some(e => e.name && normName_(e.name) === key)) {
+      throw userError_("同じ氏名の方がすでに登録されています。心当たりがない場合は運営に問い合わせてください。");
+    }
+    if (emps.some(e => normEmail_(e.email) === email)) {
+      throw userError_("このメールアドレスはすでに登録されています。");
+    }
+    const props = PropertiesService.getScriptProperties();
+    // 社員IDは削除後も使い回さない（投票済ログが別の人に引き継がれないように）
+    const seq = Math.max(Number(props.getProperty("USER_SEQ") || 0),
+      emps.reduce((m, e) => Math.max(m, Number(String(e.empNo).replace(/\D/g, "")) || 0), 0)) + 1;
+    props.setProperty("USER_SEQ", String(seq));
+    const salt = Utilities.getUuid();
+    user = {
+      empNo: "U" + ("000" + seq).slice(-4), name: name, dept: dept, email: email, active: "○",
+      pwHash: hashPw_(pw, salt), salt: salt, registeredAt: today_()
+    };
+    appendRow_("employees", user);
+    appendLog_("（新規登録）", "アカウント登録", user.empNo + " " + name);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  cache.put("register_count", String(count + 1), 3600);
+
+  const payload = listPayload_({ role: "emp", empNo: user.empNo, name: user.name });
+  payload.token = createSession_(user);
+  payload.message = "登録しました。";
+  return payload;
+}
+
+function changePassword_(user, req) {
+  const emp = findUser_(user.empNo);
+  if (hashPw_(String(req.current || ""), emp.salt) !== emp.pwHash) throw userError_("現在のパスワードが違います。");
+  const pw = String(req.password || "");
+  checkPassword_(pw);
+  const salt = Utilities.getUuid();
+  setCells_("employees", emp._row, { pwHash: hashPw_(pw, salt), salt: salt });
+  return "パスワードを変更しました。ほかの端末では再ログインが必要です。";
+}
+
+// ===== 運営による社員管理 =====
+
+// アカウントを削除する（退職・重複登録・なりすましなど）。投票済ログは残るが、投票率の分母からは外れる。
+function deleteUser_(req) {
+  const emp = findUser_(req.empNo);
+  SpreadsheetApp.getActive().getSheetByName(SHEETS.employees).deleteRow(emp._row);
+  appendLog_("運営", "アカウント削除", emp.empNo + " " + emp.name);
+  return emp.name + " さんのアカウントを削除しました。";
+}
+
+// パスワードを忘れた社員に仮パスワードを発行する（運営が本人に伝える）
+function resetPassword_(req) {
+  const emp = findUser_(req.empNo);
+  const temp = randomCode_();
+  const salt = Utilities.getUuid();
+  setCells_("employees", emp._row, { pwHash: hashPw_(temp, salt), salt: salt });
+  appendLog_("運営", "仮パスワード発行", emp.name);
+  return temp;
+}
+
+function findUser_(empNo) {
+  const emp = readTable_("employees").find(e => String(e.empNo) === String(empNo));
+  if (!emp) throw userError_("社員が見つかりません。");
+  return emp;
+}
+
 // ===== 認証 =====
 
 function authenticate_(auth) {
   const props = PropertiesService.getScriptProperties();
   const role = auth.role;
-  const failKey = "fail_" + role + "_" + String(auth.id || "").slice(0, 40);
+
+  // ログイン済みの社員（トークン）
+  if (role === "emp" && auth.token) {
+    const key = sessionKey_(auth.token);
+    const raw = props.getProperty(key);
+    const s = raw ? JSON.parse(raw) : null;
+    if (!s || s.e < Date.now()) throw userError_("ログインの有効期限が切れました。もう一度ログインしてください。", "SESSION");
+    const emp = readTable_("employees").find(e => String(e.empNo) === s.u);
+    if (!emp || !isActive_(emp) || emp.pwHash.slice(0, 16) !== s.v) {
+      props.deleteProperty(key);
+      throw userError_("もう一度ログインしてください。", "SESSION");
+    }
+    return { role: "emp", empNo: String(emp.empNo), name: emp.name, sessionKey: key };
+  }
+
+  const id = role === "emp" ? normEmail_(auth.email) : role;
+  const failKey = "fail_" + role + "_" + String(id || "").slice(0, 60);
   const cache = CacheService.getScriptCache();
   const fails = Number(cache.get(failKey) || 0);
   if (fails >= MAX_FAILURES) throw userError_("ログインの失敗が続いたため、10分間ログインできません。");
-
   const fail = msg => {
     cache.put(failKey, String(fails + 1), LOCK_SECONDS);
     throw userError_(msg);
   };
 
+  // 社員のログイン（メールアドレス＋パスワード）→ トークンを発行
   if (role === "emp") {
-    const empNo = String(auth.id || "").trim();
-    const code = String(auth.code || "").trim().toUpperCase();
-    if (!empNo || !code) fail("社員番号と投票コードを入力してください。");
-    const emp = readTable_("employees").find(e => String(e.empNo).trim() === empNo);
-    if (!emp || !isActive_(emp) || !emp.codeHash || emp.codeHash !== codeHash_(code)) fail("社員番号または投票コードが違います。");
-    return { role: "emp", empNo: empNo, name: emp.name };
+    const pw = String(auth.password || "");
+    if (!id || !pw) fail("メールアドレスとパスワードを入力してください。");
+    const emp = readTable_("employees").find(e => normEmail_(e.email) === id);
+    if (!emp || !emp.salt || hashPw_(pw, emp.salt) !== emp.pwHash) fail("メールアドレスまたはパスワードが違います。");
+    if (!isActive_(emp)) throw userError_("このアカウントは現在利用できません。運営に問い合わせてください。");
+    cache.remove(failKey);
+    const user = { role: "emp", empNo: String(emp.empNo), name: emp.name };
+    user.newToken = createSession_(emp);
+    return user;
   }
+
   if (role === "admin" || role === "company") {
     const stored = props.getProperty(role === "admin" ? "ADMIN_PW" : "COMPANY_PW");
     if (!stored) throw userError_((role === "admin" ? "運営" : "会社用") + "パスワードがまだ設定されていません。スプレッドシートのメニューから設定してください。");
     if (sha256Hex_(String(auth.code || "")) !== stored) fail("パスワードが違います。");
     return { role: role };
   }
-  throw userError_("ログインしてください。");
+  throw userError_("ログインしてください。", "SESSION");
 }
 
 function need_(user, role) {
   if (user.role !== role) throw userError_("この操作は行えません。");
 }
+
+// ログイン状態（トークン）はスクリプトのプロパティに保存する。トークンそのものではなくハッシュ値をキーにする。
+function createSession_(emp) {
+  const props = PropertiesService.getScriptProperties();
+  const now = Date.now();
+  // 期限切れのログイン状態を掃除
+  props.getKeys().forEach(k => {
+    if (k.indexOf("S_") !== 0) return;
+    try { if (JSON.parse(props.getProperty(k)).e < now) props.deleteProperty(k); } catch (e) { props.deleteProperty(k); }
+  });
+  const token = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  props.setProperty(sessionKey_(token), JSON.stringify({ u: String(emp.empNo), v: String(emp.pwHash).slice(0, 16), e: now + SESSION_DAYS * 86400000 }));
+  return token;
+}
+
+function sessionKey_(token) { return "S_" + sha256Hex_(String(token)).slice(0, 40); }
+
+function hashPw_(pw, salt) {
+  let h = sha256Hex_(salt + ":" + pw);
+  for (let i = 0; i < PW_ROUNDS; i++) h = sha256Hex_(h + salt);
+  return h;
+}
+
+function checkPassword_(pw) {
+  if (pw.length < PW_MIN) throw userError_("パスワードは" + PW_MIN + "文字以上にしてください。");
+  if (pw.length > 100) throw userError_("パスワードが長すぎます。");
+}
+
+function normEmail_(v) { return String(v || "").trim().toLowerCase(); }
+
+// 氏名の重複判定用：全角・半角をそろえ、空白をすべて取り除く（「吉沢 大将」と「吉沢大将」を同一とみなす）
+function normName_(v) { return String(v || "").normalize("NFKC").replace(/\s+/g, ""); }
 
 // ===== 一覧 =====
 
@@ -286,6 +398,7 @@ function listPayload_(user) {
     opinions: list
   };
 
+  if (user.newToken) payload.token = user.newToken;
   if (user.role === "emp") {
     payload.myVoted = voted.filter(v => String(v.empNo).trim() === user.empNo).map(v => Number(v.opinionId));
   }
@@ -299,7 +412,9 @@ function listPayload_(user) {
       const missing = openIds.filter(id => !votedSet[String(e.empNo).trim() + "|" + id]);
       return { empNo: String(e.empNo), name: e.name, dept: e.dept, missing: missing };
     }).filter(e => e.missing.length);
-    payload.noCodeCount = employees.filter(e => !e.codeHash).length;
+    payload.users = readTable_("employees").filter(e => e.empNo).map(e => ({
+      empNo: String(e.empNo), name: e.name, dept: e.dept, email: e.email, active: isActive_(e), registeredAt: e.registeredAt
+    }));
   }
   return payload;
 }
@@ -468,6 +583,9 @@ function answer_(req) {
 
 function ensureSheets_() {
   const ss = SpreadsheetApp.getActive();
+  // 旧版（投票コード方式）の社員名簿は「社員名簿（旧）」に退避して作り直す
+  const old = ss.getSheetByName(SHEETS.employees);
+  if (old && old.getRange(1, 5).getValue() === "投票コード（ハッシュ）") old.setName(SHEETS.employees + "（旧）");
   Object.keys(SHEETS).forEach(key => {
     let sh = ss.getSheetByName(SHEETS[key]);
     if (sh) return;
@@ -479,7 +597,7 @@ function ensureSheets_() {
       sh.getRange(2, 1, DEFAULT_SETTINGS.length, 3).setValues(DEFAULT_SETTINGS);
     }
     if (key === "employees") {
-      sh.getRange("A:A").setNumberFormat("@"); // 社員番号の先頭の0を消さない
+      sh.hideColumns(colIndex_("employees", "pwHash"), 2); // ハッシュ・ソルト列は隠す
     }
   });
 }
@@ -590,19 +708,12 @@ function randomCode_() {
   return code;
 }
 
-function codeHash_(code) {
-  const props = PropertiesService.getScriptProperties();
-  let salt = props.getProperty("CODE_SALT");
-  if (!salt) { salt = Utilities.getUuid(); props.setProperty("CODE_SALT", salt); }
-  return sha256Hex_(salt + ":" + String(code).trim().toUpperCase());
-}
-
 function sha256Hex_(s) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8)
     .map(b => ("0" + (b & 0xff).toString(16)).slice(-2)).join("");
 }
 
-function userError_(msg) { const e = new Error(msg); e.userMessage = msg; return e; }
+function userError_(msg, code) { const e = new Error(msg); e.userMessage = msg; e.code = code; return e; }
 
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
