@@ -668,13 +668,13 @@ function bindDetail(o) {
   on("btnComment", async () => {
     const body = $("cBody").value.trim();
     if (!body) { alert("コメントを入力してください。"); return; }
-    await act("comment", { id: o.id, stance: $("cStance").value, body: body });
+    await act("comment", { id: o.id, stance: $("cStance").value, stanceIdx: $("cStance").selectedIndex, body: body });
   });
   on("btnAnswer", () => {
     const reason = $("ansReason").value.trim();
     if (!reason) { alert("理由を入力してください。"); return; }
     if (!confirm("この内容で回答を登録します。社員全員に公開されます。よろしいですか？")) return;
-    act("answer", { id: o.id, result: $("ansResult").value, reason: reason, planDate: $("ansPlan").value });
+    act("answer", { id: o.id, result: $("ansResult").value, resultIdx: $("ansResult").selectedIndex, reason: reason, planDate: $("ansPlan").value });
   });
   on("btnDeadline", () => act("setDeadline", { id: o.id, deadline: $("dlDate").value }));
   on("btnSkip", () => { if (confirm("この意見を「見送り」にします。投票は締め切られます。よろしいですか？")) act("setStatus", { id: o.id, status: "見送り" }); });
@@ -718,7 +718,7 @@ $("btnPost").onclick = () => {
     if (!v("pTitle") || !v("pProposal")) { alert("タイトルと提案を入力してください。"); return; }
     if (!confirm("この内容で投稿します。投稿後は編集できません。よろしいですか？")) return;
     const ok = await act("post", {
-      category: v("pCat"), article: v("pArticle"), title: v("pTitle"),
+      category: v("pCat"), categoryIdx: $("pCat").selectedIndex, article: v("pArticle"), title: v("pTitle"),
       current: v("pCurrent"), problem: v("pProblem"), proposal: v("pProposal"), effect: v("pEffect")
     });
     if (ok) { closeModal(); S.tab = "open"; render(); }

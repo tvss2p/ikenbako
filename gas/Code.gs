@@ -446,7 +446,7 @@ function finalizeOne_(o) {
 // ===== 社員の操作 =====
 
 function postOpinion_(req) {
-  const category = oneOf_(req.category, CATEGORIES, "カテゴリ");
+  const category = oneOf_(req.category, CATEGORIES, "カテゴリ", req.categoryIdx);
   const title = text_(req.title, LIMITS.title, "タイトル", true);
   const proposal = text_(req.proposal, LIMITS.field, "提案", true);
   const current = text_(req.current, LIMITS.field, "現状", false);
@@ -491,7 +491,7 @@ function addComment_(req) {
   const id = Number(req.id);
   const o = findOpinion_(id);
   if (isTrue_(o.hidden)) throw userError_("この意見にはコメントできません。");
-  const stance = oneOf_(req.stance, STANCES, "立場");
+  const stance = oneOf_(req.stance, STANCES, "立場", req.stanceIdx);
   const body = text_(req.body, LIMITS.comment, "コメント", true);
   const comments = readTable_("comments");
   const cid = comments.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0) + 1;
@@ -570,7 +570,7 @@ function submit_(req) {
 function answer_(req) {
   const o = findOpinion_(Number(req.id));
   if ([STATUS.submitted, STATUS.answered].indexOf(o.status) < 0) throw userError_("提出済みの意見だけ回答できます。");
-  const result = oneOf_(req.result, RESULTS, "回答");
+  const result = oneOf_(req.result, RESULTS, "回答", req.resultIdx);
   const reason = text_(req.reason, LIMITS.reason, "理由", true);
   const planDate = String(req.planDate || "");
   if (planDate && !/^\d{4}-\d{2}-\d{2}$/.test(planDate)) throw userError_("実施予定日が正しくありません。");
@@ -684,9 +684,14 @@ function text_(v, max, label, required) {
   return s;
 }
 
-function oneOf_(v, list, label) {
-  if (list.indexOf(v) < 0) throw userError_(label + "を選んでください。");
-  return v;
+// 選択肢は「何番目か」（idx）で受け取る。名前で届いた場合も、空白や全角半角の違いを無視して照合する。
+function oneOf_(v, list, label, idx) {
+  const i = Number(idx);
+  if (idx !== undefined && idx !== null && idx !== "" && Number.isInteger(i) && i >= 0 && i < list.length) return list[i];
+  const key = normName_(v);
+  const hit = list.find(x => normName_(x) === key);
+  if (hit) return hit;
+  throw userError_(label + "を選んでください。（受け取った値：" + String(v === undefined ? "なし" : v).slice(0, 30) + "）");
 }
 
 function isActive_(e) { return String(e.active).trim() !== "×"; }
