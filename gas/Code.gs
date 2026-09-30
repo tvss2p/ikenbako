@@ -1,0 +1,609 @@
+/**
+ * 社員意見箱 データ保存用 Google Apps Script
+ *
+ * スプレッドシートに「意見」「コメント」「投票済ログ」「社員名簿」「設定」「操作履歴」の各シートを作り、
+ * 意見箱の画面（index.html）からの操作を受け付けて読み書きする。
+ *
+ * 匿名性のための設計：
+ *  - 意見・コメントには投稿者を一切記録しない。
+ *  - 「誰が投票したか」は投票済ログ（社員番号・意見ID・日付）にだけ記録し、賛成/反対の中身は記録しない。
+ *  - 「賛成・反対の数」は投票期間中はスクリプトのプロパティに保存し、締切後にだけ意見シートへ書き出す。
+ *    （シートの変更履歴から「このログの行と同時に賛成が1増えた」と突き合わせられないようにするため）
+ *
+ * 同時操作への対策：
+ *  - 画面からは「意見12に賛成」のような操作だけを送り、全データの上書きはしない。
+ *  - 書き込みはすべて LockService で1件ずつ順番に処理する。
+ *
+ * セットアップ手順は同じフォルダの README.md を参照。
+ */
+
+const SHEETS = {
+  opinions: "意見",
+  comments: "コメント",
+  voted: "投票済ログ",
+  employees: "社員名簿",
+  settings: "設定",
+  log: "操作履歴"
+};
+
+// 各シートの列（順番を変えないこと）
+const COLS = {
+  opinions: [
+    ["id", "ID"], ["status", "状態"], ["category", "カテゴリ"], ["article", "条文"], ["title", "タイトル"],
+    ["current", "現状"], ["problem", "困っていること"], ["proposal", "提案"], ["effect", "期待できる効果"],
+    ["postedAt", "投稿日"], ["deadline", "投票期限"],
+    ["yes", "賛成（確定）"], ["no", "反対（確定）"], ["voters", "投票者数（確定）"],
+    ["submittedAt", "提出日"], ["answerDue", "回答期限"],
+    ["result", "会社回答"], ["reason", "回答理由"], ["answeredAt", "回答日"],
+    ["planDate", "実施予定日"], ["doneAt", "実施日"], ["hidden", "非表示"]
+  ],
+  comments: [["id", "ID"], ["opinionId", "意見ID"], ["stance", "立場"], ["body", "本文"], ["postedAt", "投稿日"], ["hidden", "非表示"]],
+  voted: [["empNo", "社員番号"], ["opinionId", "意見ID"], ["date", "投票日"]],
+  employees: [["empNo", "社員番号"], ["name", "氏名"], ["dept", "部署"], ["active", "在籍（○/×）"], ["codeHash", "投票コード（ハッシュ）"]],
+  settings: [["key", "項目"], ["value", "値"], ["note", "説明"]],
+  log: [["at", "日時"], ["actor", "操作者"], ["action", "操作"], ["detail", "内容"]]
+};
+
+const DEFAULT_SETTINGS = [
+  ["投票期間（日）", "14", "新しい意見の投票期限を、投稿日から何日後にするか"],
+  ["回答期限（日）", "30", "提出した日から、会社の回答期限を何日後にするか"],
+  ["提出先", "佐野ケーブルテレビ 御中", "意見書（PDF）の宛先"],
+  ["提出者名義", "社員意見箱 運営", "意見書（PDF）の提出者欄"]
+];
+
+const CATEGORIES = ["就業規則", "勤務・シフト", "業務改善", "設備・環境", "福利厚生", "その他"];
+const STANCES = ["賛成の立場", "反対の立場", "質問・その他"];
+const RESULTS = ["可決", "一部可決", "否決", "継続検討"];
+
+const STATUS = { open: "投票中", skipped: "見送り", submitted: "提出済", answered: "回答済", done: "実施済" };
+
+const LIMITS = { title: 60, field: 1000, article: 30, comment: 500, reason: 2000 };
+const MAX_FAILURES = 10;        // この回数ログインに失敗すると
+const LOCK_SECONDS = 10 * 60;   // この秒数、そのアカウントでのログインを受け付けない
+const TZ = "Asia/Tokyo";
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 見間違えやすい 0/O・1/I を除く
+
+// ===== スプレッドシートのメニュー =====
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("意見箱")
+    .addItem("初期設定（シートを作成）", "setupSheets")
+    .addSeparator()
+    .addItem("運営パスワードを設定", "setAdminPassword")
+    .addItem("会社用パスワードを設定", "setCompanyPassword")
+    .addSeparator()
+    .addItem("投票コードを発行（未発行の社員）", "issueCodes")
+    .addItem("選択した社員の投票コードを再発行", "reissueSelectedCodes")
+    .addToUi();
+}
+
+function setupSheets() {
+  ensureSheets_();
+  SpreadsheetApp.getUi().alert("シートを作成しました。「社員名簿」に社員番号・氏名・部署・在籍を入力してください。");
+}
+
+function setAdminPassword() { promptPassword_("ADMIN_PW", "運営パスワードを設定", "意見箱の「運営」ログインに使うパスワードを入力してください。"); }
+function setCompanyPassword() { promptPassword_("COMPANY_PW", "会社用パスワードを設定", "意見箱の「会社」ログインに使うパスワードを入力してください。"); }
+
+function promptPassword_(prop, title, message) {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(title, message, ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const pw = res.getResponseText().trim();
+  if (pw.length < 6) { ui.alert("6文字以上で設定してください。設定しませんでした。"); return; }
+  PropertiesService.getScriptProperties().setProperty(prop, sha256Hex_(pw));
+  ui.alert("設定しました。");
+}
+
+// 投票コードが未発行の在籍社員にコードを発行し、「コード配布用」シートに一覧を出す。
+function issueCodes() {
+  ensureSheets_();
+  const emps = readTable_("employees");
+  const targets = emps.filter(e => e.empNo && isActive_(e) && !e.codeHash);
+  if (!targets.length) { SpreadsheetApp.getUi().alert("未発行の在籍社員はいません。"); return; }
+  writeCodes_(targets);
+}
+
+// 社員名簿で選択している行の社員に、コードを発行し直す（コードを忘れた・漏れた場合）。
+function reissueSelectedCodes() {
+  const ui = SpreadsheetApp.getUi();
+  const sheet = SpreadsheetApp.getActiveSheet();
+  if (sheet.getName() !== SHEETS.employees) { ui.alert("「社員名簿」シートで、再発行する社員の行を選択してから実行してください。"); return; }
+  const range = sheet.getActiveRange();
+  const first = Math.max(2, range.getRow());
+  const last = range.getLastRow();
+  const emps = readTable_("employees").filter(e => e._row >= first && e._row <= last && e.empNo);
+  if (!emps.length) { ui.alert("社員の行が選択されていません。"); return; }
+  if (ui.alert("選択した " + emps.length + " 名のコードを再発行します。古いコードは使えなくなります。よろしいですか？", ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
+  writeCodes_(emps);
+}
+
+function writeCodes_(targets) {
+  const ss = SpreadsheetApp.getActive();
+  const empSheet = ss.getSheetByName(SHEETS.employees);
+  const hashCol = colIndex_("employees", "codeHash");
+  const rows = [["社員番号", "氏名", "部署", "投票コード"]];
+  targets.forEach(e => {
+    const code = randomCode_();
+    empSheet.getRange(e._row, hashCol).setValue(toCell_(codeHash_(code)));
+    rows.push([txt_(e.empNo), txt_(e.name), txt_(e.dept), code]);
+  });
+  let out = ss.getSheetByName("コード配布用");
+  if (!out) out = ss.insertSheet("コード配布用");
+  out.clear();
+  out.getRange(1, 1, rows.length, 4).setValues(rows);
+  out.getRange(1, 1, 1, 4).setFontWeight("bold");
+  out.autoResizeColumns(1, 4);
+  ss.setActiveSheet(out);
+  appendLog_("運営", "投票コード発行", (rows.length - 1) + "名");
+  SpreadsheetApp.getUi().alert(
+    (rows.length - 1) + " 名分のコードを「コード配布用」シートに出力しました。\n" +
+    "印刷・配布が終わったら、「コード配布用」シートは必ず削除してください。\n" +
+    "（名簿にはコードそのものではなく、照合用のハッシュ値だけが保存されています）");
+}
+
+// ===== Web API =====
+
+function doGet() {
+  return json_({ ok: true, app: "ikenbako" });
+}
+
+// ブラウザからは CORS のプリフライトを避けるため Content-Type: text/plain で JSON を送る。
+function doPost(e) {
+  try {
+    const req = JSON.parse(e.postData.contents);
+    ensureSheets_();
+    const user = authenticate_(req.auth || {});
+    return json_(dispatch_(req, user));
+  } catch (err) {
+    return json_({ ok: false, error: err && err.userMessage ? err.userMessage : "エラーが発生しました：" + err });
+  }
+}
+
+function dispatch_(req, user) {
+  const a = req.action;
+  if (a === "login" || a === "list") return listPayload_(user);
+
+  if (a === "post") { need_(user, "emp"); return withLock_(() => postOpinion_(req), user); }
+  if (a === "vote") { need_(user, "emp"); return withLock_(() => vote_(user, req), user); }
+  if (a === "comment") { need_(user, "emp"); return withLock_(() => addComment_(req), user); }
+
+  if (a === "setDeadline") { need_(user, "admin"); return withLock_(() => setDeadline_(req), user); }
+  if (a === "setHidden") { need_(user, "admin"); return withLock_(() => setHidden_(req), user); }
+  if (a === "setStatus") { need_(user, "admin"); return withLock_(() => setStatus_(req), user); }
+  if (a === "submit") { need_(user, "admin"); return withLock_(() => submit_(req), user); }
+
+  if (a === "answer") { need_(user, "company"); return withLock_(() => answer_(req), user); }
+
+  throw userError_("不明な操作です。");
+}
+
+// 書き込みはロックを取って1件ずつ処理し、処理後の最新一覧を返す。
+function withLock_(fn, user) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) throw userError_("混み合っています。少し待ってからもう一度お試しください。");
+  let message;
+  try {
+    message = fn();
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  const payload = listPayload_(user);
+  if (message) payload.message = message;
+  return payload;
+}
+
+// ===== 認証 =====
+
+function authenticate_(auth) {
+  const props = PropertiesService.getScriptProperties();
+  const role = auth.role;
+  const failKey = "fail_" + role + "_" + String(auth.id || "").slice(0, 40);
+  const cache = CacheService.getScriptCache();
+  const fails = Number(cache.get(failKey) || 0);
+  if (fails >= MAX_FAILURES) throw userError_("ログインの失敗が続いたため、10分間ログインできません。");
+
+  const fail = msg => {
+    cache.put(failKey, String(fails + 1), LOCK_SECONDS);
+    throw userError_(msg);
+  };
+
+  if (role === "emp") {
+    const empNo = String(auth.id || "").trim();
+    const code = String(auth.code || "").trim().toUpperCase();
+    if (!empNo || !code) fail("社員番号と投票コードを入力してください。");
+    const emp = readTable_("employees").find(e => String(e.empNo).trim() === empNo);
+    if (!emp || !isActive_(emp) || !emp.codeHash || emp.codeHash !== codeHash_(code)) fail("社員番号または投票コードが違います。");
+    return { role: "emp", empNo: empNo, name: emp.name };
+  }
+  if (role === "admin" || role === "company") {
+    const stored = props.getProperty(role === "admin" ? "ADMIN_PW" : "COMPANY_PW");
+    if (!stored) throw userError_((role === "admin" ? "運営" : "会社用") + "パスワードがまだ設定されていません。スプレッドシートのメニューから設定してください。");
+    if (sha256Hex_(String(auth.code || "")) !== stored) fail("パスワードが違います。");
+    return { role: role };
+  }
+  throw userError_("ログインしてください。");
+}
+
+function need_(user, role) {
+  if (user.role !== role) throw userError_("この操作は行えません。");
+}
+
+// ===== 一覧 =====
+
+function listPayload_(user) {
+  finalizeClosed_();
+  const today = today_();
+  const opinions = readTable_("opinions");
+  const comments = readTable_("comments");
+  const voted = readTable_("voted");
+  const employees = readTable_("employees").filter(e => e.empNo && isActive_(e));
+  const props = PropertiesService.getScriptProperties();
+  const isAdmin = user.role === "admin";
+
+  const votersBy = {};
+  voted.forEach(v => { const k = String(v.opinionId); votersBy[k] = (votersBy[k] || 0) + 1; });
+
+  const commentsBy = {};
+  comments.forEach(c => {
+    if (isTrue_(c.hidden) && !isAdmin) return;
+    const k = String(c.opinionId);
+    (commentsBy[k] = commentsBy[k] || []).push({
+      id: Number(c.id), stance: c.stance, body: c.body, postedAt: c.postedAt, hidden: isTrue_(c.hidden)
+    });
+  });
+
+  const list = opinions
+    .filter(o => o.id !== "" && (isAdmin || !isTrue_(o.hidden)))
+    .map(o => {
+      const id = String(o.id);
+      const finalized = o.yes !== "";
+      const t = finalized ? { y: Number(o.yes), n: Number(o.no) } : readTally_(props, id);
+      return {
+        id: Number(o.id), status: o.status, category: o.category, article: o.article, title: o.title,
+        current: o.current, problem: o.problem, proposal: o.proposal, effect: o.effect,
+        postedAt: o.postedAt, deadline: o.deadline,
+        closed: o.status !== STATUS.open || o.deadline < today,
+        yes: t.y, no: t.n, voters: finalized ? Number(o.voters) : (votersBy[id] || 0),
+        submittedAt: o.submittedAt, answerDue: o.answerDue,
+        result: o.result, reason: o.reason, answeredAt: o.answeredAt,
+        planDate: o.planDate, doneAt: o.doneAt,
+        hidden: isTrue_(o.hidden),
+        comments: commentsBy[id] || []
+      };
+    });
+
+  const payload = {
+    ok: true,
+    role: user.role,
+    name: user.name || "",
+    today: today,
+    activeCount: employees.length,
+    settings: publicSettings_(),
+    categories: CATEGORIES, stances: STANCES, results: RESULTS,
+    opinions: list
+  };
+
+  if (user.role === "emp") {
+    payload.myVoted = voted.filter(v => String(v.empNo).trim() === user.empNo).map(v => Number(v.opinionId));
+  }
+
+  // 未投票者一覧は運営だけに返す（会社には個人ごとの投票状況を見せない）
+  if (isAdmin) {
+    const openIds = list.filter(o => o.status === STATUS.open && !o.closed && !o.hidden).map(o => o.id);
+    const votedSet = {};
+    voted.forEach(v => { votedSet[String(v.empNo).trim() + "|" + v.opinionId] = true; });
+    payload.nonVoters = employees.map(e => {
+      const missing = openIds.filter(id => !votedSet[String(e.empNo).trim() + "|" + id]);
+      return { empNo: String(e.empNo), name: e.name, dept: e.dept, missing: missing };
+    }).filter(e => e.missing.length);
+    payload.noCodeCount = employees.filter(e => !e.codeHash).length;
+  }
+  return payload;
+}
+
+// 投票期限を過ぎた・投票中でなくなった意見の賛否を、プロパティからシートへ確定させる。
+function finalizeClosed_() {
+  const today = today_();
+  const pending = readTable_("opinions").filter(o => o.id !== "" && o.yes === "" && (o.status !== STATUS.open || o.deadline < today));
+  if (!pending.length) return;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return; // 次の読み込み時に再試行する
+  try {
+    readTable_("opinions")
+      .filter(o => o.id !== "" && o.yes === "" && (o.status !== STATUS.open || o.deadline < today))
+      .forEach(o => finalizeOne_(o));
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function finalizeOne_(o) {
+  const props = PropertiesService.getScriptProperties();
+  const t = readTally_(props, String(o.id));
+  const voters = readTable_("voted").filter(v => String(v.opinionId) === String(o.id)).length;
+  setCells_("opinions", o._row, { yes: t.y, no: t.n, voters: voters });
+}
+
+// ===== 社員の操作 =====
+
+function postOpinion_(req) {
+  const category = oneOf_(req.category, CATEGORIES, "カテゴリ");
+  const title = text_(req.title, LIMITS.title, "タイトル", true);
+  const proposal = text_(req.proposal, LIMITS.field, "提案", true);
+  const current = text_(req.current, LIMITS.field, "現状", false);
+  const problem = text_(req.problem, LIMITS.field, "困っていること", false);
+  const effect = text_(req.effect, LIMITS.field, "期待できる効果", false);
+  const article = text_(req.article, LIMITS.article, "条文", false);
+
+  const opinions = readTable_("opinions");
+  const id = opinions.reduce((m, o) => Math.max(m, Number(o.id) || 0), 0) + 1;
+  const days = Number(getSetting_("投票期間（日）")) || 14;
+  const row = {
+    id: id, status: STATUS.open, category: category, article: article, title: title,
+    current: current, problem: problem, proposal: proposal, effect: effect,
+    postedAt: today_(), deadline: addDays_(today_(), days), hidden: ""
+  };
+  appendRow_("opinions", row);
+  // 投稿者は記録しない
+  appendLog_("（匿名）", "意見投稿", "No." + id + " " + title);
+  return "意見を投稿しました（No." + id + "）。";
+}
+
+function vote_(user, req) {
+  const id = Number(req.id);
+  const side = req.side === "yes" ? "y" : req.side === "no" ? "n" : "";
+  if (!side) throw userError_("賛成か反対を選んでください。");
+  const o = findOpinion_(id);
+  if (isTrue_(o.hidden) || o.status !== STATUS.open) throw userError_("この意見は投票を受け付けていません。");
+  if (o.deadline < today_()) throw userError_("投票期限を過ぎています。");
+  const already = readTable_("voted").some(v => String(v.empNo).trim() === user.empNo && Number(v.opinionId) === id);
+  if (already) throw userError_("この意見にはすでに投票しています。");
+
+  // 投票済ログには賛否を書かない。賛否の数はプロパティにだけ加算する。
+  appendRow_("voted", { empNo: user.empNo, opinionId: id, date: today_() });
+  const props = PropertiesService.getScriptProperties();
+  const t = readTally_(props, String(id));
+  t[side] += 1;
+  props.setProperty("T_" + id, JSON.stringify(t));
+  return "投票しました。";
+}
+
+function addComment_(req) {
+  const id = Number(req.id);
+  const o = findOpinion_(id);
+  if (isTrue_(o.hidden)) throw userError_("この意見にはコメントできません。");
+  const stance = oneOf_(req.stance, STANCES, "立場");
+  const body = text_(req.body, LIMITS.comment, "コメント", true);
+  const comments = readTable_("comments");
+  const cid = comments.reduce((m, c) => Math.max(m, Number(c.id) || 0), 0) + 1;
+  appendRow_("comments", { id: cid, opinionId: id, stance: stance, body: body, postedAt: today_(), hidden: "" });
+  appendLog_("（匿名）", "コメント投稿", "No." + id);
+  return "コメントしました。";
+}
+
+// ===== 運営の操作 =====
+
+function setDeadline_(req) {
+  const o = findOpinion_(Number(req.id));
+  const d = String(req.deadline || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw userError_("期限の日付が正しくありません。");
+  if (o.status !== STATUS.open) throw userError_("投票中の意見だけ期限を変更できます。");
+  if (o.yes !== "") throw userError_("締切済みの意見は期限を変更できません（集計が確定しています）。");
+  setCells_("opinions", o._row, { deadline: d });
+  appendLog_("運営", "投票期限変更", "No." + o.id + " → " + d);
+  return "投票期限を " + d + " に変更しました。";
+}
+
+function setHidden_(req) {
+  const hidden = req.hidden ? "○" : "";
+  if (req.type === "comment") {
+    const c = readTable_("comments").find(x => Number(x.id) === Number(req.id));
+    if (!c) throw userError_("コメントが見つかりません。");
+    setCells_("comments", c._row, { hidden: hidden });
+    appendLog_("運営", req.hidden ? "コメント非表示" : "コメント再表示", "コメントID " + c.id + "（意見No." + c.opinionId + "）");
+  } else {
+    const o = findOpinion_(Number(req.id));
+    setCells_("opinions", o._row, { hidden: hidden });
+    appendLog_("運営", req.hidden ? "意見非表示" : "意見再表示", "No." + o.id);
+  }
+  return req.hidden ? "非表示にしました。" : "再表示しました。";
+}
+
+// 見送り・実施済などの状態変更
+function setStatus_(req) {
+  const o = findOpinion_(Number(req.id));
+  const to = req.status;
+  if (to === STATUS.skipped) {
+    if (o.status !== STATUS.open) throw userError_("投票中・締切の意見だけ見送りにできます。");
+    setCells_("opinions", o._row, { status: STATUS.skipped });
+    finalizeOne_(findOpinion_(o.id));
+  } else if (to === STATUS.done) {
+    if (o.status !== STATUS.answered) throw userError_("会社の回答が済んだ意見だけ実施済にできます。");
+    setCells_("opinions", o._row, { status: STATUS.done, doneAt: today_() });
+  } else if (to === STATUS.answered) {
+    if (o.status !== STATUS.done) throw userError_("この変更はできません。");
+    setCells_("opinions", o._row, { status: STATUS.answered, doneAt: "" });
+  } else {
+    throw userError_("この変更はできません。");
+  }
+  appendLog_("運営", "状態変更", "No." + o.id + " → " + to);
+  return "「" + to + "」にしました。";
+}
+
+// 意見書として提出：状態を提出済にし、集計を確定させる。
+function submit_(req) {
+  const ids = (req.ids || []).map(Number).filter(Boolean);
+  if (!ids.length) throw userError_("提出する意見を選んでください。");
+  const days = Number(getSetting_("回答期限（日）")) || 30;
+  const today = today_();
+  ids.forEach(id => {
+    const o = findOpinion_(id);
+    if (o.status !== STATUS.open && o.status !== STATUS.skipped) throw userError_("No." + id + " はすでに提出済みです。");
+    setCells_("opinions", o._row, { status: STATUS.submitted, submittedAt: today, answerDue: addDays_(today, days) });
+    finalizeOne_(findOpinion_(id));
+  });
+  appendLog_("運営", "意見書提出", ids.map(i => "No." + i).join("、"));
+  return ids.length + " 件を提出済にしました。";
+}
+
+// ===== 会社の操作 =====
+
+function answer_(req) {
+  const o = findOpinion_(Number(req.id));
+  if ([STATUS.submitted, STATUS.answered].indexOf(o.status) < 0) throw userError_("提出済みの意見だけ回答できます。");
+  const result = oneOf_(req.result, RESULTS, "回答");
+  const reason = text_(req.reason, LIMITS.reason, "理由", true);
+  const planDate = String(req.planDate || "");
+  if (planDate && !/^\d{4}-\d{2}-\d{2}$/.test(planDate)) throw userError_("実施予定日が正しくありません。");
+  setCells_("opinions", o._row, { status: STATUS.answered, result: result, reason: reason, answeredAt: today_(), planDate: planDate });
+  appendLog_("会社", "回答", "No." + o.id + " " + result);
+  return "回答を登録しました。";
+}
+
+// ===== シート読み書き =====
+
+function ensureSheets_() {
+  const ss = SpreadsheetApp.getActive();
+  Object.keys(SHEETS).forEach(key => {
+    let sh = ss.getSheetByName(SHEETS[key]);
+    if (sh) return;
+    sh = ss.insertSheet(SHEETS[key]);
+    const headers = COLS[key].map(c => c[1]);
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold").setBackground("#e8eef7");
+    sh.setFrozenRows(1);
+    if (key === "settings") {
+      sh.getRange(2, 1, DEFAULT_SETTINGS.length, 3).setValues(DEFAULT_SETTINGS);
+    }
+    if (key === "employees") {
+      sh.getRange("A:A").setNumberFormat("@"); // 社員番号の先頭の0を消さない
+    }
+  });
+}
+
+function readTable_(key) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEETS[key]);
+  const cols = COLS[key];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const values = sh.getRange(2, 1, last - 1, cols.length).getValues();
+  return values.map((r, i) => {
+    const o = { _row: i + 2 };
+    cols.forEach((c, j) => { o[c[0]] = cellStr_(r[j]); });
+    return o;
+  });
+}
+
+function appendRow_(key, obj) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEETS[key]);
+  sh.appendRow(COLS[key].map(c => toCell_(obj[c[0]])));
+}
+
+function setCells_(key, row, obj) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEETS[key]);
+  Object.keys(obj).forEach(k => {
+    sh.getRange(row, colIndex_(key, k)).setValue(toCell_(obj[k]));
+  });
+}
+
+function colIndex_(key, name) {
+  const i = COLS[key].findIndex(c => c[0] === name);
+  if (i < 0) throw new Error("unknown column " + name);
+  return i + 1;
+}
+
+function findOpinion_(id) {
+  const o = readTable_("opinions").find(x => Number(x.id) === Number(id));
+  if (!o) throw userError_("意見が見つかりません。");
+  return o;
+}
+
+// 文字は先頭に ' を付けて書き込む（日付・数式に勝手に変換されないように。"=..." の数式実行も防ぐ）
+function toCell_(v) {
+  if (v === undefined || v === null || v === "") return "";
+  if (typeof v === "number") return v;
+  return "'" + String(v);
+}
+
+function txt_(v) { return toCell_(v); }
+
+function cellStr_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, "yyyy-MM-dd");
+  return v === null || v === undefined ? "" : String(v);
+}
+
+function appendLog_(actor, action, detail) {
+  appendRow_("log", { at: Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd HH:mm"), actor: actor, action: action, detail: detail });
+}
+
+function getSetting_(name) {
+  const s = readTable_("settings").find(r => r.key === name);
+  return s ? s.value : "";
+}
+
+function publicSettings_() {
+  const o = {};
+  readTable_("settings").forEach(r => { if (r.key) o[r.key] = r.value; });
+  return o;
+}
+
+// ===== ユーティリティ =====
+
+function readTally_(props, id) {
+  const raw = props.getProperty("T_" + id);
+  if (!raw) return { y: 0, n: 0 };
+  try { const t = JSON.parse(raw); return { y: Number(t.y) || 0, n: Number(t.n) || 0 }; }
+  catch (e) { return { y: 0, n: 0 }; }
+}
+
+function text_(v, max, label, required) {
+  const s = String(v === undefined || v === null ? "" : v).replace(/\r\n?/g, "\n").trim();
+  if (required && !s) throw userError_(label + "を入力してください。");
+  if (s.length > max) throw userError_(label + "は" + max + "文字以内で入力してください。");
+  return s;
+}
+
+function oneOf_(v, list, label) {
+  if (list.indexOf(v) < 0) throw userError_(label + "を選んでください。");
+  return v;
+}
+
+function isActive_(e) { return String(e.active).trim() !== "×"; }
+function isTrue_(v) { return String(v).trim() !== "" && String(v).trim() !== "FALSE"; }
+
+function today_() { return Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd"); }
+
+function addDays_(ymd, days) {
+  const p = ymd.split("-").map(Number);
+  const d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + days));
+  return Utilities.formatDate(d, "UTC", "yyyy-MM-dd");
+}
+
+function randomCode_() {
+  // UUID（乱数）から8文字のコードを作る
+  const hex = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  let code = "";
+  for (let i = 0; i < 8; i++) code += CODE_CHARS[parseInt(hex.substr(i * 4, 4), 16) % CODE_CHARS.length];
+  return code;
+}
+
+function codeHash_(code) {
+  const props = PropertiesService.getScriptProperties();
+  let salt = props.getProperty("CODE_SALT");
+  if (!salt) { salt = Utilities.getUuid(); props.setProperty("CODE_SALT", salt); }
+  return sha256Hex_(salt + ":" + String(code).trim().toUpperCase());
+}
+
+function sha256Hex_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8)
+    .map(b => ("0" + (b & 0xff).toString(16)).slice(-2)).join("");
+}
+
+function userError_(msg) { const e = new Error(msg); e.userMessage = msg; return e; }
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}

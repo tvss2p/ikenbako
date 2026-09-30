@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>社員意見箱</title>
+<style>
+:root{
+  --bg:#f4f6f9; --card:#fff; --text:#1f2933; --sub:#616e7c; --line:#dde3ea;
+  --main:#1d5fa8; --main-soft:#e6eef8; --yes:#1f8a4c; --yes-soft:#e3f4ea; --no:#c2410c; --no-soft:#fdebe1;
+  --warn:#b45309; --warn-soft:#fef3c7; --gray-soft:#eef1f4;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;font-size:15px;line-height:1.6}
+button{font:inherit;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.hidden{display:none!important}
+.wrap{max-width:860px;margin:0 auto;padding:0 16px}
+
+/* ヘッダー */
+header{background:var(--main);color:#fff}
+header .wrap{display:flex;align-items:center;gap:12px;height:56px}
+header h1{font-size:18px;margin:0;flex:1;white-space:nowrap}
+header .who{font-size:13px;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header button{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:6px;padding:4px 10px;font-size:13px}
+
+/* タブ */
+nav.tabs{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+nav.tabs .wrap{display:flex;gap:4px;overflow-x:auto}
+nav.tabs button{background:none;border:none;border-bottom:3px solid transparent;padding:12px 10px 9px;color:var(--sub);white-space:nowrap;font-weight:600}
+nav.tabs button.on{color:var(--main);border-bottom-color:var(--main)}
+.count{display:inline-block;min-width:20px;padding:0 6px;margin-left:4px;border-radius:10px;background:var(--gray-soft);font-size:12px;text-align:center}
+nav.tabs button.on .count{background:var(--main-soft)}
+.count.alert{background:var(--no);color:#fff}
+
+/* ツールバー */
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:16px 0 12px}
+.toolbar select,.toolbar input{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:#fff}
+.toolbar input{flex:1;min-width:140px}
+.btn{border:none;border-radius:8px;padding:9px 16px;background:var(--main);color:#fff;font-weight:600}
+.btn.sub{background:#fff;color:var(--main);border:1px solid var(--main)}
+.btn.gray{background:#fff;color:var(--text);border:1px solid var(--line)}
+.btn.danger{background:#fff;color:var(--no);border:1px solid var(--no)}
+.btn.sm{padding:5px 10px;font-size:13px}
+.btn:disabled{opacity:.5;cursor:default}
+.tabnote{color:var(--sub);font-size:13px;margin:0 0 10px}
+
+/* カード */
+.list{display:flex;flex-direction:column;gap:10px;padding-bottom:40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;cursor:pointer}
+.card:hover{border-color:#b7c4d4}
+.card .top{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px}
+.card h3{margin:0 0 8px;font-size:16px}
+.meta{color:var(--sub);font-size:13px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;background:var(--main-soft);color:var(--main);font-weight:600}
+.chip.gray{background:var(--gray-soft);color:var(--sub)}
+.chip.ok{background:var(--yes-soft);color:var(--yes)}
+.chip.ng{background:var(--no-soft);color:var(--no)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--gray-soft);margin:8px 0 6px}
+.bar .y{background:var(--yes)} .bar .n{background:var(--no)}
+.yes{color:var(--yes);font-weight:700} .no{color:var(--no);font-weight:700}
+.warn{color:var(--warn)}
+.empty{text-align:center;color:var(--sub);padding:40px 0}
+
+/* モーダル */
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow-y:auto;z-index:20}
+.modal .box{background:#fff;border-radius:12px;width:100%;max-width:720px;padding:20px 20px 24px;position:relative}
+.modal .close{position:absolute;top:10px;right:12px;background:none;border:none;font-size:24px;color:var(--sub)}
+.modal h2{margin:4px 32px 6px 0;font-size:19px}
+.sec{margin-top:16px}
+.sec h4{margin:0 0 4px;font-size:13px;color:var(--sub)}
+.sec p{margin:0;white-space:pre-wrap;word-break:break-word}
+.panel{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:16px}
+.panel.admin{background:#f8fafc;border-style:dashed}
+.votebtns{display:flex;gap:10px;margin-top:10px}
+.votebtns button{flex:1;padding:12px;border-radius:10px;font-weight:700;font-size:16px}
+.vy{background:var(--yes-soft);color:var(--yes);border:2px solid var(--yes)}
+.vn{background:var(--no-soft);color:var(--no);border:2px solid var(--no)}
+.comment{border-top:1px solid var(--line);padding:10px 0}
+.comment p{margin:4px 0 0;white-space:pre-wrap;word-break:break-word}
+.comment.hid{opacity:.5}
+label.f{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
+label.f small{font-weight:400;color:var(--sub)}
+.in{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff}
+textarea.in{min-height:70px;resize:vertical}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.rules{background:var(--warn-soft);color:#78350f;border-radius:8px;padding:10px 12px;font-size:13px;margin-top:8px}
+
+/* ログイン */
+.login{max-width:380px;margin:48px auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:24px}
+.login h2{margin:0 0 4px;font-size:20px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:16px 0 4px}
+.seg button{flex:1;border:none;background:#fff;padding:8px;color:var(--sub);font-weight:600}
+.seg button.on{background:var(--main);color:#fff}
+.err{color:var(--no);font-size:13px;margin-top:8px;min-height:1em}
+
+table.t{width:100%;border-collapse:collapse;font-size:14px}
+table.t th,table.t td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+table.t th{color:var(--sub);font-weight:600;font-size:12px}
+
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1f2933;color:#fff;padding:10px 18px;border-radius:8px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:40;max-width:90vw}
+#toast.show{opacity:1}
+#loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:30}
+.spin{width:36px;height:36px;border:4px solid var(--main-soft);border-top-color:var(--main);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* 印刷（意見書PDF） */
+#print{display:none}
+@media print{
+  @page{size:A4;margin:18mm 16mm}
+  body{background:#fff}
+  body>*:not(#print){display:none!important}
+  #print{display:block;color:#000;font-size:10.5pt;line-height:1.7}
+  .doc{page-break-after:always}
+  .doc:last-child{page-break-after:auto}
+  .doc h1{text-align:center;font-size:17pt;letter-spacing:.3em;margin:0 0 14pt}
+  .doc .hd{display:flex;justify-content:space-between;margin-bottom:12pt}
+  .doc table{width:100%;border-collapse:collapse;margin-bottom:10pt}
+  .doc th,.doc td{border:1px solid #000;padding:4pt 6pt;text-align:left;vertical-align:top}
+  .doc th{width:24%;background:#f0f0f0;font-weight:600}
+  .doc td{white-space:pre-wrap}
+  .doc h3{font-size:11.5pt;margin:12pt 0 4pt;border-left:4pt solid #000;padding-left:6pt}
+  .doc .ans{border:1px solid #000;min-height:90pt;padding:6pt;white-space:pre-wrap}
+  .doc ul{margin:0;padding-left:16pt}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>社員意見箱</h1>
+    <span class="who" id="who"></span>
+    <button id="btnReload" class="hidden" title="最新の状態に更新">更新</button>
+    <button id="btnLogout" class="hidden">ログアウト</button>
+  </div>
+</header>
+
+<!-- 接続先の設定（初回のみ） -->
+<section id="viewSetup" class="hidden">
+  <div class="login">
+    <h2>接続先の設定</h2>
+    <p class="tabnote">Apps Script のウェブアプリURL（https://script.google.com/macros/s/…/exec）を入力してください。</p>
+    <input id="setupUrl" class="in" placeholder="https://script.google.com/macros/s/…/exec">
+    <div class="err" id="setupErr"></div>
+    <button class="btn" id="btnSetup" style="width:100%;margin-top:8px">接続</button>
+  </div>
+</section>
+
+<!-- ログイン -->
+<section id="viewLogin" class="hidden">
+  <div class="login">
+    <h2>ログイン</h2>
+    <div class="seg" id="roleSeg">
+      <button data-role="emp" class="on">社員</button>
+      <button data-role="admin">運営</button>
+      <button data-role="company">会社</button>
+    </div>
+    <div id="empFields">
+      <label class="f">社員番号</label>
+      <input id="loginId" class="in" autocomplete="username" inputmode="numeric">
+      <label class="f">投票コード <small>（運営から配布された8文字）</small></label>
+      <input id="loginCode" class="in" autocomplete="current-password" style="text-transform:uppercase">
+    </div>
+    <div id="pwFields" class="hidden">
+      <label class="f">パスワード</label>
+      <input id="loginPw" type="password" class="in" autocomplete="current-password">
+    </div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px;margin-top:12px;color:var(--sub)">
+      <input type="checkbox" id="remember" checked> この端末にログイン情報を保存する
+    </label>
+    <div class="err" id="loginErr"></div>
+    <button class="btn" id="btnLogin" style="width:100%;margin-top:8px">ログイン</button>
+    <p class="tabnote" style="margin-top:14px">投稿・コメントは匿名です。誰がどちらに投票したかは記録されません。</p>
+  </div>
+</section>
+
+<!-- メイン -->
+<section id="viewMain" class="hidden">
+  <nav class="tabs"><div class="wrap" id="tabs"></div></nav>
+  <div class="wrap">
+    <div class="toolbar" id="toolbar">
+      <select id="fCat"><option value="">すべてのカテゴリ</option></select>
+      <input id="fText" placeholder="キーワードで絞り込み">
+      <button class="btn" id="btnPost">＋ 意見を投稿</button>
+    </div>
+    <p class="tabnote" id="tabNote"></p>
+    <div class="list" id="list"></div>
+    <div id="adminPanel" class="hidden"></div>
+  </div>
+</section>
+
+<div class="modal hidden" id="modal"><div class="box"><button class="close" id="modalClose" aria-label="閉じる">×</button><div id="modalBody"></div></div></div>
+<div id="loading" class="hidden"><div class="spin"></div></div>
+<div id="toast"></div>
+<div id="print"></div>
+
+<script>
+// ===== 設定 =====
+// Apps Script をデプロイしたら、ここにウェブアプリの URL を入れると全端末に反映される。
+// 空のままなら、初回起動時の「接続先の設定」画面で入力した URL（その端末のみ）を使う。
+const API_URL = "";
+
+const LS_API = "ikenbako_api";
+const LS_AUTH = "ikenbako_auth";
+
+const S = { auth: null, data: null, tab: "open", role: "emp", openId: null };
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
+
+function apiUrl() { return API_URL || lsGet(LS_API) || ""; }
+
+async function api(action, extra) {
+  const url = apiUrl();
+  if (!url) throw new Error("接続先が設定されていません。");
+  $("loading").classList.remove("hidden");
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}))
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || "エラーが発生しました。");
+    return json;
+  } catch (e) {
+    if (e instanceof TypeError) throw new Error("サーバーに接続できませんでした。通信状態を確認してください。");
+    throw e;
+  } finally {
+    $("loading").classList.add("hidden");
+  }
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 3000);
+}
+
+function show(view) {
+  ["viewSetup", "viewLogin", "viewMain"].forEach(v => $(v).classList.toggle("hidden", v !== view));
+  const inMain = view === "viewMain";
+  $("btnLogout").classList.toggle("hidden", !inMain);
+  $("btnReload").classList.toggle("hidden", !inMain);
+}
+
+// ===== 起動 =====
+async function start() {
+  if (!apiUrl()) { show("viewSetup"); return; }
+  const saved = lsGet(LS_AUTH);
+  if (saved) {
+    try {
+      S.auth = JSON.parse(saved);
+      await load("login");
+      return;
+    } catch (e) {
+      lsSet(LS_AUTH, null);
+      $("loginErr").textContent = e.message;
+    }
+  }
+  S.auth = null;
+  show("viewLogin");
+}
+
+async function load(action, extra) {
+  const data = await api(action || "list", extra);
+  S.data = data;
+  S.role = data.role;
+  if (!document.querySelector("#tabs button") || action === "login") initMain();
+  render();
+  if (S.openId) openDetail(S.openId);
+  if (data.message) toast(data.message);
+}
+
+// 操作を送り、返ってきた最新一覧で画面を更新する
+async function act(action, extra) {
+  try { await load(action, extra); return true; }
+  catch (e) { alert(e.message); return false; }
+}
+
+// ===== 接続先設定・ログイン =====
+$("btnSetup").onclick = async () => {
+  const url = $("setupUrl").value.trim();
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url)) { $("setupErr").textContent = "URLの形式が正しくありません。"; return; }
+  lsSet(LS_API, url);
+  start();
+};
+
+$("roleSeg").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  S.loginRole = b.dataset.role;
+  document.querySelectorAll("#roleSeg button").forEach(x => x.classList.toggle("on", x === b));
+  $("empFields").classList.toggle("hidden", S.loginRole !== "emp");
+  $("pwFields").classList.toggle("hidden", S.loginRole === "emp");
+  $("loginErr").textContent = "";
+};
+
+async function doLogin() {
+  const role = S.loginRole || "emp";
+  S.auth = role === "emp"
+    ? { role: "emp", id: $("loginId").value.trim(), code: $("loginCode").value.trim().toUpperCase() }
+    : { role: role, id: role, code: $("loginPw").value };
+  $("loginErr").textContent = "";
+  try {
+    await load("login");
+    if ($("remember").checked) lsSet(LS_AUTH, JSON.stringify(S.auth));
+    $("loginCode").value = ""; $("loginPw").value = "";
+  } catch (e) {
+    S.auth = null;
+    $("loginErr").textContent = e.message;
+  }
+}
+$("btnLogin").onclick = doLogin;
+["loginId", "loginCode", "loginPw"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); }));
+
+$("btnLogout").onclick = () => {
+  if (!confirm("ログアウトしますか？")) return;
+  lsSet(LS_AUTH, null);
+  S.auth = null; S.data = null; S.openId = null;
+  $("tabs").innerHTML = "";
+  show("viewLogin");
+};
+$("btnReload").onclick = () => act("list");
+
+// ===== タブ =====
+const TABS = [
+  { key: "open", label: "投票中", note: "賛成の多い順に並んでいます。", roles: ["emp", "admin", "company"],
+    filter: o => o.status === "投票中" && !o.closed },
+  { key: "todo", label: "未投票", note: "まだ投票していない意見です。投票期限までに投票してください。", roles: ["emp"],
+    filter: o => o.status === "投票中" && !o.closed && !S.data.myVoted.includes(o.id) },
+  { key: "closed", label: "締切・提出待ち", note: "投票期限を過ぎた意見です。運営が会社への提出を判断します。", roles: ["emp", "admin", "company"],
+    filter: o => (o.status === "投票中" && o.closed) || o.status === "見送り" },
+  { key: "submitted", label: "提出済", note: "意見書として会社に提出し、回答を待っている意見です。", roles: ["emp", "admin", "company"],
+    filter: o => o.status === "提出済" },
+  { key: "answered", label: "回答済", note: "会社から回答があった意見です。", roles: ["emp", "admin", "company"],
+    filter: o => o.status === "回答済" || o.status === "実施済" },
+  { key: "admin", label: "運営", roles: ["admin"] }
+];
+
+function visibleTabs() { return TABS.filter(t => t.roles.includes(S.role)); }
+
+function initMain() {
+  const d = S.data;
+  const roleName = { emp: d.name ? d.name + " さん" : "社員", admin: "運営", company: "会社" }[d.role];
+  $("who").textContent = roleName;
+  $("fCat").innerHTML = '<option value="">すべてのカテゴリ</option>' + d.categories.map(c => `<option>${esc(c)}</option>`).join("");
+  $("btnPost").classList.toggle("hidden", d.role !== "emp");
+  if (!visibleTabs().some(t => t.key === S.tab)) S.tab = "open";
+  show("viewMain");
+}
+
+function renderTabs() {
+  const ops = S.data.opinions.filter(o => !o.hidden || S.role === "admin");
+  $("tabs").innerHTML = visibleTabs().map(t => {
+    const n = t.filter ? ops.filter(t.filter).length : (S.data.nonVoters || []).length;
+    const cls = t.key === "todo" && n ? "count alert" : "count";
+    const count = t.key === "admin" ? "" : `<span class="${cls}">${n}</span>`;
+    return `<button data-tab="${t.key}" class="${t.key === S.tab ? "on" : ""}">${esc(t.label)}${count}</button>`;
+  }).join("");
+}
+$("tabs").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  S.tab = b.dataset.tab;
+  render();
+  window.scrollTo(0, 0);
+};
+
+$("fCat").onchange = render;
+$("fText").oninput = () => { clearTimeout(render._t); render._t = setTimeout(render, 200); };
+
+// ===== 一覧 =====
+function sortOps(list, tab) {
+  const byVotes = (a, b) => b.yes - a.yes || a.no - b.no || a.id - b.id;
+  if (tab === "submitted") return list.sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || "") || b.id - a.id);
+  if (tab === "answered") return list.sort((a, b) => (b.answeredAt || "").localeCompare(a.answeredAt || "") || b.id - a.id);
+  return list.sort(byVotes);
+}
+
+function render() {
+  renderTabs();
+  const tab = TABS.find(t => t.key === S.tab);
+  const isAdminTab = S.tab === "admin";
+  $("toolbar").classList.toggle("hidden", isAdminTab);
+  $("list").classList.toggle("hidden", isAdminTab);
+  $("adminPanel").classList.toggle("hidden", !isAdminTab);
+  $("tabNote").textContent = tab.note || "";
+  if (isAdminTab) { renderAdmin(); return; }
+
+  const cat = $("fCat").value;
+  const q = $("fText").value.trim().toLowerCase();
+  let list = S.data.opinions.filter(o => (!o.hidden || S.role === "admin") && tab.filter(o));
+  if (cat) list = list.filter(o => o.category === cat);
+  if (q) list = list.filter(o => [o.title, o.article, o.current, o.problem, o.proposal, o.effect].join(" ").toLowerCase().includes(q));
+  sortOps(list, S.tab);
+  $("list").innerHTML = list.length ? list.map(cardHtml).join("") : `<div class="empty">該当する意見はありません。</div>`;
+}
+
+function daysLeft(o) {
+  const a = new Date(S.data.today + "T00:00:00"), b = new Date(o.deadline + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+
+function rate(o) {
+  const n = S.data.activeCount;
+  return n ? Math.round(o.voters / n * 100) : 0;
+}
+
+function resultChip(o) {
+  if (!o.result) return "";
+  const cls = o.result === "可決" ? "ok" : o.result === "否決" ? "ng" : "warn";
+  return `<span class="chip ${cls}">${esc(o.result)}</span>`;
+}
+
+function statusChips(o) {
+  let s = "";
+  if (o.hidden) s += `<span class="chip ng">非表示中</span>`;
+  if (o.status === "見送り") s += `<span class="chip gray">見送り</span>`;
+  if (o.status === "提出済") {
+    const late = o.answerDue && o.answerDue < S.data.today;
+    s += `<span class="chip ${late ? "ng" : "gray"}">回答期限 ${esc(o.answerDue)}${late ? "（期限超過）" : ""}</span>`;
+  }
+  if (o.status === "実施済") s += `<span class="chip ok">実施済</span>`;
+  if (S.role === "emp" && S.data.myVoted.includes(o.id)) s += `<span class="chip ok">✓ 投票済</span>`;
+  return s;
+}
+
+function voteBar(o) {
+  const total = o.yes + o.no;
+  const y = total ? o.yes / total * 100 : 0, n = total ? o.no / total * 100 : 0;
+  return `<div class="bar"><div class="y" style="width:${y}%"></div><div class="n" style="width:${n}%"></div></div>`;
+}
+
+function cardHtml(o) {
+  let when;
+  if (o.status === "投票中" && !o.closed) {
+    const d = daysLeft(o);
+    when = d === 0 ? `<span class="no">今日まで</span>` : `残り${d}日（${esc(o.deadline)}まで）`;
+  } else {
+    when = `投票期限 ${esc(o.deadline)}`;
+  }
+  return `<div class="card" data-id="${o.id}">
+    <div class="top"><span class="chip">${esc(o.category)}</span>${o.article ? `<span class="chip gray">${esc(o.article)}</span>` : ""}${resultChip(o)}${statusChips(o)}</div>
+    <h3>${esc(o.title)}</h3>
+    ${voteBar(o)}
+    <div class="meta">
+      <span class="yes">賛成 ${o.yes}</span><span class="no">反対 ${o.no}</span>
+      <span>投票率 ${rate(o)}%</span><span>💬 ${o.comments.filter(c => !c.hidden).length}</span>
+      <span>No.${o.id}</span><span>${when}</span>
+    </div>
+  </div>`;
+}
+$("list").onclick = e => {
+  const c = e.target.closest(".card"); if (c) openDetail(Number(c.dataset.id));
+};
+
+// ===== 詳細 =====
+function openModal(html) {
+  $("modalBody").innerHTML = html;
+  $("modal").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+}
+function closeModal() {
+  $("modal").classList.add("hidden");
+  document.body.style.overflow = "";
+  S.openId = null;
+}
+$("modalClose").onclick = closeModal;
+$("modal").onclick = e => { if (e.target === $("modal")) closeModal(); };
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(); });
+
+function section(label, text) {
+  return text ? `<div class="sec"><h4>${esc(label)}</h4><p>${esc(text)}</p></div>` : "";
+}
+
+function openDetail(id) {
+  const o = S.data.opinions.find(x => x.id === id);
+  if (!o) { closeModal(); return; }
+  S.openId = id;
+  const role = S.role;
+  const open = o.status === "投票中" && !o.closed;
+  const voted = role === "emp" && S.data.myVoted.includes(o.id);
+
+  let h = `<div class="top" style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">${esc(o.category)}</span>${o.article ? `<span class="chip gray">${esc(o.article)}</span>` : ""}${resultChip(o)}${statusChips(o)}</div>
+    <h2>${esc(o.title)}</h2>
+    <div class="meta"><span>No.${o.id}</span><span>投稿日 ${esc(o.postedAt)}</span><span>投票期限 ${esc(o.deadline)}</span>${o.submittedAt ? `<span>提出日 ${esc(o.submittedAt)}</span>` : ""}</div>`;
+  h += section("現状", o.current) + section("困っていること", o.problem) + section("提案", o.proposal) + section("期待できる効果", o.effect);
+
+  // 投票
+  h += `<div class="panel">
+    <div class="meta" style="justify-content:space-between"><span class="yes" style="font-size:17px">賛成 ${o.yes}</span><span>投票者 ${o.voters} / ${S.data.activeCount} 名（投票率 ${rate(o)}%）</span><span class="no" style="font-size:17px">反対 ${o.no}</span></div>
+    ${voteBar(o)}`;
+  if (role === "emp" && open && !voted) {
+    h += `<div class="votebtns"><button class="vy" data-vote="yes">👍 賛成</button><button class="vn" data-vote="no">👎 反対</button></div>
+      <p class="tabnote" style="margin:6px 0 0">投票は1人1回で、取り消しはできません。誰がどちらに投票したかは記録されません。</p>`;
+  } else if (voted) {
+    h += `<p class="tabnote" style="margin:6px 0 0">✓ この意見には投票済みです。</p>`;
+  } else if (!open) {
+    h += `<p class="tabnote" style="margin:6px 0 0">投票は締め切られています。</p>`;
+  }
+  h += `</div>`;
+
+  // 会社の回答
+  if (o.result) {
+    h += `<div class="panel"><h4 style="margin:0 0 6px">会社の回答 ${resultChip(o)} <small style="font-weight:400;color:var(--sub)">${esc(o.answeredAt)}</small></h4>
+      <p style="margin:0;white-space:pre-wrap">${esc(o.reason)}</p>
+      ${o.planDate ? `<p class="tabnote" style="margin:6px 0 0">実施予定日：${esc(o.planDate)}${o.doneAt ? `　実施日：${esc(o.doneAt)}` : ""}</p>` : (o.doneAt ? `<p class="tabnote" style="margin:6px 0 0">実施日：${esc(o.doneAt)}</p>` : "")}
+    </div>`;
+  }
+  if (role === "company" && (o.status === "提出済" || o.status === "回答済")) {
+    h += `<div class="panel admin"><h4 style="margin:0">回答を入力</h4>
+      <label class="f">結果</label>
+      <select id="ansResult" class="in">${S.data.results.map(r => `<option ${r === o.result ? "selected" : ""}>${esc(r)}</option>`).join("")}</select>
+      <label class="f">理由</label>
+      <textarea id="ansReason" class="in" style="min-height:110px">${esc(o.reason)}</textarea>
+      <label class="f">実施予定日 <small>（可決・一部可決の場合）</small></label>
+      <input id="ansPlan" type="date" class="in" value="${esc(o.planDate)}">
+      <button class="btn" id="btnAnswer" style="margin-top:12px">回答を登録</button>
+    </div>`;
+  }
+
+  // 運営の操作
+  if (role === "admin") {
+    h += `<div class="panel admin"><h4 style="margin:0 0 8px">運営の操作</h4><div class="row">`;
+    if (open) h += `<input type="date" id="dlDate" class="in" style="width:auto" value="${esc(o.deadline)}"><button class="btn sm gray" id="btnDeadline">期限を変更</button>`;
+    if (o.status === "投票中" || o.status === "見送り") h += `<button class="btn sm" id="btnSubmitOne">意見書として提出</button>`;
+    if (o.status === "投票中") h += `<button class="btn sm gray" id="btnSkip">見送りにする</button>`;
+    if (o.status === "回答済") h += `<button class="btn sm gray" id="btnDone">実施済にする</button>`;
+    if (o.status === "実施済") h += `<button class="btn sm gray" id="btnUndone">実施済を取り消す</button>`;
+    h += `<button class="btn sm danger" id="btnHide">${o.hidden ? "再表示する" : "非表示にする"}</button>`;
+    h += `</div></div>`;
+  }
+  if (["提出済", "回答済", "実施済"].includes(o.status) && role !== "emp") {
+    h += `<div style="margin-top:12px"><button class="btn sub sm" id="btnPrintOne">🖨 意見書を印刷・PDF保存</button></div>`;
+  }
+
+  // コメント
+  const cs = o.comments.filter(c => !c.hidden || role === "admin");
+  h += `<div class="sec"><h4>社員のコメント（${cs.filter(c => !c.hidden).length}件）</h4>`;
+  h += cs.length ? cs.map(c => `<div class="comment ${c.hidden ? "hid" : ""}">
+      <div class="meta"><span class="chip ${c.stance === "賛成の立場" ? "ok" : c.stance === "反対の立場" ? "ng" : "gray"}">${esc(c.stance)}</span><span>${esc(c.postedAt)}</span>
+      ${role === "admin" ? `<button class="btn sm gray" data-hide-comment="${c.id}" data-hidden="${c.hidden ? 1 : 0}">${c.hidden ? "再表示" : "非表示"}</button>` : ""}</div>
+      <p>${esc(c.body)}</p></div>`).join("") : `<p class="tabnote">まだコメントはありません。</p>`;
+  if (role === "emp" && !o.hidden) {
+    h += `<div style="margin-top:10px"><div class="row">
+        <select id="cStance" class="in" style="width:auto">${S.data.stances.map(s => `<option>${esc(s)}</option>`).join("")}</select></div>
+      <textarea id="cBody" class="in" style="margin-top:6px" maxlength="500" placeholder="匿名でコメントできます（500文字まで）"></textarea>
+      <button class="btn sm" id="btnComment" style="margin-top:6px">コメントする</button></div>`;
+  }
+  h += `</div>`;
+
+  const wasOpen = !$("modal").classList.contains("hidden");
+  const scroll = $("modal").scrollTop;
+  openModal(h);
+  if (wasOpen) $("modal").scrollTop = scroll;
+  bindDetail(o);
+}
+
+function bindDetail(o) {
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  document.querySelectorAll("[data-vote]").forEach(b => b.onclick = () => {
+    const side = b.dataset.vote;
+    if (!confirm(`「${o.title}」に${side === "yes" ? "賛成" : "反対"}で投票します。\n投票は取り消せません。よろしいですか？`)) return;
+    act("vote", { id: o.id, side: side });
+  });
+  on("btnComment", async () => {
+    const body = $("cBody").value.trim();
+    if (!body) { alert("コメントを入力してください。"); return; }
+    await act("comment", { id: o.id, stance: $("cStance").value, body: body });
+  });
+  on("btnAnswer", () => {
+    const reason = $("ansReason").value.trim();
+    if (!reason) { alert("理由を入力してください。"); return; }
+    if (!confirm("この内容で回答を登録します。社員全員に公開されます。よろしいですか？")) return;
+    act("answer", { id: o.id, result: $("ansResult").value, reason: reason, planDate: $("ansPlan").value });
+  });
+  on("btnDeadline", () => act("setDeadline", { id: o.id, deadline: $("dlDate").value }));
+  on("btnSkip", () => { if (confirm("この意見を「見送り」にします。投票は締め切られます。よろしいですか？")) act("setStatus", { id: o.id, status: "見送り" }); });
+  on("btnDone", () => act("setStatus", { id: o.id, status: "実施済" }));
+  on("btnUndone", () => act("setStatus", { id: o.id, status: "回答済" }));
+  on("btnHide", () => {
+    if (!o.hidden && !confirm("この意見を非表示にします（運営以外には見えなくなります）。よろしいですか？")) return;
+    act("setHidden", { type: "opinion", id: o.id, hidden: !o.hidden });
+  });
+  on("btnSubmitOne", () => submitAndPrint([o.id]));
+  on("btnPrintOne", () => printDocs([o]));
+  document.querySelectorAll("[data-hide-comment]").forEach(b => b.onclick = () => {
+    act("setHidden", { type: "comment", id: Number(b.dataset.hideComment), hidden: b.dataset.hidden !== "1" });
+  });
+}
+
+// ===== 投稿 =====
+$("btnPost").onclick = () => {
+  const d = S.data;
+  const days = d.settings["投票期間（日）"] || "14";
+  openModal(`<h2>意見を投稿</h2>
+    <p class="tabnote">投稿者は記録されません（完全匿名）。投稿すると、今日から${esc(days)}日間の投票が始まります。</p>
+    <label class="f">カテゴリ</label>
+    <select id="pCat" class="in">${d.categories.map(c => `<option>${esc(c)}</option>`).join("")}</select>
+    <label class="f">関係する就業規則の条文 <small>（任意。例：第12条）</small></label>
+    <input id="pArticle" class="in" maxlength="30">
+    <label class="f">タイトル <small>（必須・60文字まで）</small></label>
+    <input id="pTitle" class="in" maxlength="60" placeholder="例：休憩時間を分割して取れるようにしてほしい">
+    <label class="f">現状 <small>（今どうなっているか）</small></label>
+    <textarea id="pCurrent" class="in" maxlength="1000"></textarea>
+    <label class="f">困っていること</label>
+    <textarea id="pProblem" class="in" maxlength="1000"></textarea>
+    <label class="f">提案 <small>（必須・どう変えてほしいか）</small></label>
+    <textarea id="pProposal" class="in" maxlength="1000"></textarea>
+    <label class="f">期待できる効果</label>
+    <textarea id="pEffect" class="in" maxlength="1000"></textarea>
+    <div class="rules">個人名や、特定の人を責める内容は書かないでください。ルールに反する投稿は運営が非表示にすることがあります。</div>
+    <button class="btn" id="btnDoPost" style="margin-top:14px;width:100%">投稿する</button>`);
+  $("btnDoPost").onclick = async () => {
+    const v = id => $(id).value.trim();
+    if (!v("pTitle") || !v("pProposal")) { alert("タイトルと提案を入力してください。"); return; }
+    if (!confirm("この内容で投稿します。投稿後は編集できません。よろしいですか？")) return;
+    const ok = await act("post", {
+      category: v("pCat"), article: v("pArticle"), title: v("pTitle"),
+      current: v("pCurrent"), problem: v("pProblem"), proposal: v("pProposal"), effect: v("pEffect")
+    });
+    if (ok) { closeModal(); S.tab = "open"; render(); }
+  };
+};
+
+// ===== 運営タブ =====
+function renderAdmin() {
+  const d = S.data;
+  const cands = d.opinions.filter(o => (o.status === "投票中" || o.status === "見送り") && !o.hidden);
+  sortOps(cands, "closed");
+  const submitted = d.opinions.filter(o => ["提出済", "回答済", "実施済"].includes(o.status) && !o.hidden)
+    .sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || "") || b.id - a.id);
+  const openOps = d.opinions.filter(o => o.status === "投票中" && !o.closed && !o.hidden);
+
+  let h = `<div class="panel" style="background:#fff">
+    <div class="meta"><span>在籍社員 <b>${d.activeCount}</b> 名</span>
+    ${d.noCodeCount ? `<span class="no">投票コード未発行 ${d.noCodeCount} 名（スプレッドシートのメニューから発行）</span>` : ""}</div></div>`;
+
+  h += `<div class="panel" style="background:#fff"><h4 style="margin:0 0 6px">意見書として提出</h4>
+    <p class="tabnote">提出する意見を選んでください。提出すると投票が締め切られ、「提出済」に移動し、意見書（PDF）の印刷画面が開きます。</p>`;
+  h += cands.length ? `<table class="t"><tr><th></th><th>No.</th><th>タイトル</th><th>賛成</th><th>反対</th><th>投票率</th><th>状態</th></tr>` +
+    cands.map(o => `<tr><td><input type="checkbox" class="subChk" value="${o.id}"></td><td>${o.id}</td><td>${esc(o.title)}</td>
+      <td class="yes">${o.yes}</td><td class="no">${o.no}</td><td>${rate(o)}%</td>
+      <td>${o.status === "見送り" ? "見送り" : o.closed ? "締切" : `<span class="warn">投票中（残り${daysLeft(o)}日）</span>`}</td></tr>`).join("") +
+    `</table><button class="btn" id="btnSubmitSel" style="margin-top:10px">選択した意見を提出して意見書を出力</button>` : `<p class="tabnote">提出できる意見はありません。</p>`;
+  h += `</div>`;
+
+  h += `<div class="panel" style="background:#fff"><h4 style="margin:0 0 6px">未投票者（投票中の意見 ${openOps.length} 件）</h4>
+    <p class="tabnote">この一覧は運営だけが見られます。会社には表示されません。</p>`;
+  h += (d.nonVoters || []).length ? `<table class="t"><tr><th>社員番号</th><th>氏名</th><th>部署</th><th>未投票</th></tr>` +
+    d.nonVoters.map(e => `<tr><td>${esc(e.empNo)}</td><td>${esc(e.name)}</td><td>${esc(e.dept)}</td><td>${e.missing.length}件（${e.missing.map(i => "No." + i).join("、")}）</td></tr>`).join("") +
+    `</table>` : `<p class="tabnote">${openOps.length ? "全員が投票済みです。" : "投票中の意見はありません。"}</p>`;
+  h += `</div>`;
+
+  h += `<div class="panel" style="background:#fff;margin-bottom:40px"><h4 style="margin:0 0 6px">意見書の再出力</h4>`;
+  h += submitted.length ? `<div class="row"><select id="reprintSel" class="in" style="flex:1">${submitted.map(o => `<option value="${o.id}">${esc(o.submittedAt)} No.${o.id} ${esc(o.title)}</option>`).join("")}</select>
+    <button class="btn sub" id="btnReprint">印刷・PDF保存</button></div>` : `<p class="tabnote">提出済みの意見はありません。</p>`;
+  h += `</div>`;
+
+  $("adminPanel").innerHTML = h;
+  const sel = $("btnSubmitSel");
+  if (sel) sel.onclick = () => submitAndPrint([...document.querySelectorAll(".subChk:checked")].map(c => Number(c.value)));
+  const rp = $("btnReprint");
+  if (rp) rp.onclick = () => printDocs([S.data.opinions.find(o => o.id === Number($("reprintSel").value))]);
+}
+
+async function submitAndPrint(ids) {
+  if (!ids.length) { alert("提出する意見を選んでください。"); return; }
+  const ops = ids.map(id => S.data.opinions.find(o => o.id === id));
+  const early = ops.filter(o => o.status === "投票中" && !o.closed);
+  let msg = `${ids.length}件を意見書として提出します。\n` + ops.map(o => `・No.${o.id} ${o.title}`).join("\n");
+  if (early.length) msg += `\n\n※ ${early.map(o => "No." + o.id).join("、")} はまだ投票期限前です。提出すると投票が締め切られます。`;
+  if (!confirm(msg + "\n\nよろしいですか？")) return;
+  const ok = await act("submit", { ids: ids });
+  if (!ok) return;
+  closeModal();
+  printDocs(ids.map(id => S.data.opinions.find(o => o.id === id)));
+}
+
+// ===== 意見書（印刷・PDF） =====
+function printDocs(ops) {
+  const st = S.data.settings;
+  const n = S.data.activeCount;
+  const row = (k, v) => v ? `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>` : "";
+  $("print").innerHTML = ops.map(o => {
+    const comments = o.comments.filter(c => !c.hidden);
+    return `<div class="doc">
+      <h1>意 見 書</h1>
+      <div class="hd"><div>${esc(st["提出先"] || "")}</div><div style="text-align:right">提出日：${esc(o.submittedAt || S.data.today)}<br>${esc(st["提出者名義"] || "")}</div></div>
+      <p>社員意見箱に寄せられた下記の意見について、社員の投票結果とあわせて提出します。ご検討のうえ、回答期限までにご回答くださいますようお願いいたします。</p>
+      <table>
+        ${row("意見番号", "No." + o.id)}${row("カテゴリ", o.category)}${row("関係する条文", o.article)}
+        ${row("件名", o.title)}${row("投稿日", o.postedAt)}${row("投票期間", o.postedAt + " 〜 " + o.deadline)}
+      </table>
+      <h3>意見の内容</h3>
+      <table>${row("現状", o.current)}${row("困っていること", o.problem)}${row("提案", o.proposal)}${row("期待できる効果", o.effect)}</table>
+      <h3>社員投票の結果</h3>
+      <table>
+        <tr><th>賛成</th><td>${o.yes} 票（${o.yes + o.no ? Math.round(o.yes / (o.yes + o.no) * 100) : 0}%）</td></tr>
+        <tr><th>反対</th><td>${o.no} 票（${o.yes + o.no ? Math.round(o.no / (o.yes + o.no) * 100) : 0}%）</td></tr>
+        <tr><th>投票者数</th><td>${o.voters} 名 ／ 在籍 ${n} 名（投票率 ${rate(o)}%）</td></tr>
+      </table>
+      ${comments.length ? `<h3>社員のコメント（${comments.length}件）</h3><ul>${comments.map(c => `<li>【${esc(c.stance)}】${esc(c.body)}</li>`).join("")}</ul>` : ""}
+      <h3>会社の回答${o.answerDue ? `（回答期限：${esc(o.answerDue)}）` : ""}</h3>
+      <div class="ans">${o.result ? `結果：${esc(o.result)}\n理由：${esc(o.reason)}${o.planDate ? `\n実施予定日：${esc(o.planDate)}` : ""}` : "結果：　可決　・　一部可決　・　否決　・　継続検討\n\n理由："}</div>
+    </div>`;
+  }).join("");
+  setTimeout(() => window.print(), 100);
+}
+
+start();
+</script>
+</body>
+</html>
