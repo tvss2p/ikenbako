@@ -251,7 +251,14 @@ async function api(action, extra) {
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(Object.assign({ action: action, auth: S.auth }, extra || {}))
     });
-    const json = await res.json();
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch (e) {
+      // JSON ではなく Google のエラー画面・ログイン画面が返ってきた場合
+      throw new Error("スプレッドシート（Apps Script）から正しい応答がありませんでした。" +
+        "デプロイの「アクセスできるユーザー」が「全員」になっているか、最新のコードを「新バージョン」でデプロイしたかを確認してください。");
+    }
     if (!json.ok) {
       const err = new Error(json.error || "エラーが発生しました。");
       if (json.code === "SESSION" && S.data) { expireSession(err.message); err.handled = true; }
